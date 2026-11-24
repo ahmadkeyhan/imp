@@ -11,6 +11,24 @@ const HEX_H = 160*Math.sin(Math.PI/3);
 const HEX_CX = 80;
 const HEX_CY = 80*Math.sin(Math.PI/3);
 
+// Chance the hive is an impossible object. 0 keeps every structure buildable
+// in 3D. 1 keeps only structures whose beams fail to close.
+export const IMPOSSIBLE = 1;
+
+// Sides 0 and 3 step x, sides 1 and 4 step y, sides 2 and 5 step z.
+// Opposite sides step opposite ways. A loop that does not return to the same
+// point cannot be built.
+const AXIS = [0, 1, 2, 0, 1, 2];
+const STEP = [-1, -1, -1, 1, 1, 1];
+
+// The board is two rings. Beams stay inside the center and the first ring.
+const HIVE_R = 2;
+const STRUCTURE_R = 2;
+
+function radius(q: number, r: number): number {
+  return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
+}
+
 // Screen step from (q, r) to a neighbor. Index is the side digit.
 const NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
   [-1, 0],
@@ -74,18 +92,21 @@ function bit(mask: number, side: number): number {
 
 function buildCells(): Cell[] {
   const coords: { q: number; r: number }[] = [];
-  for (let q = -2; q <= 2; q++) {
-    for (let r = -2; r <= 2; r++) {
-      if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= 2) coords.push({ q, r });
+  for (let q = -HIVE_R; q <= HIVE_R; q++) {
+    for (let r = -HIVE_R; r <= HIVE_R; r++) {
+      if (radius(q, r) <= HIVE_R) coords.push({ q, r });
     }
   }
 
   const index = new Map(coords.map((cell, i) => [`${cell.q},${cell.r}`, i]));
   return coords.map((cell) => {
     let outer = 0;
+    const inside = radius(cell.q, cell.r) <= STRUCTURE_R;
     const neighbors = NEIGHBORS.map(([dq, dr], side) => {
-      const next = index.get(`${cell.q + dq},${cell.r + dr}`);
-      if (next === undefined) {
+      const nq = cell.q + dq;
+      const nr = cell.r + dr;
+      const next = index.get(`${nq},${nr}`);
+      if (!inside || next === undefined || radius(nq, nr) > STRUCTURE_R) {
         outer |= 1 << (5 - side);
         return -1;
       }
@@ -110,24 +131,99 @@ function slot(q: number, r: number): { x: number; y: number } {
   return { x: cx - HEX_CX, y: cy - HEX_CY };
 }
 
+// A finished assignment has split into more than one road network when a
+// closed piece sits beside another piece. A piece is closed once none of its
+// crossings still faces an empty cell.
+function piecesSplit(cells: Cell[], assigned: number[]): boolean {
+  const seen = new Uint8Array(cells.length);
+  let pieces = 0;
+  let closed = 0;
+  for (let i = 0; i < cells.length; i++) {
+    if (assigned[i] <= 0 || seen[i]) continue;
+    pieces++;
+    const stack = [i];
+    seen[i] = 1;
+    let open = false;
+    while (stack.length) {
+      const index = stack.pop() as number;
+      const cell = cells[index];
+      for (let side = 0; side < 6; side++) {
+        if (!bit(assigned[index], side)) continue;
+        const neighbor = cell.neighbors[side];
+        if (neighbor < 0) continue;
+        if (assigned[neighbor] < 0) {
+          open = true;
+          continue;
+        }
+        if (assigned[neighbor] > 0 && !seen[neighbor]) {
+          seen[neighbor] = 1;
+          stack.push(neighbor);
+        }
+      }
+    }
+    if (!open) closed++;
+    if (closed > 0 && pieces > 1) return true;
+  }
+  return false;
+}
+
+function isPossible(cells: Cell[], assigned: number[]): boolean {
+  const placed: Array<[number, number, number] | null> = cells.map(() => null);
+  for (let start = 0; start < cells.length; start++) {
+    if (assigned[start] <= 0 || placed[start]) continue;
+    placed[start] = [0, 0, 0];
+    const stack = [start];
+    while (stack.length) {
+      const index = stack.pop() as number;
+      const here = placed[index] as [number, number, number];
+      const cell = cells[index];
+      for (let side = 0; side < 6; side++) {
+        if (!bit(assigned[index], side)) continue;
+        const neighbor = cell.neighbors[side];
+        if (neighbor < 0 || assigned[neighbor] <= 0) continue;
+        const next: [number, number, number] = [here[0], here[1], here[2]];
+        next[AXIS[side]] += STEP[side];
+        const got = placed[neighbor];
+        if (!got) {
+          placed[neighbor] = next;
+          stack.push(neighbor);
+          continue;
+        }
+        if (got[0] !== next[0] || got[1] !== next[1] || got[2] !== next[2]) return false;
+      }
+    }
+  }
+  return true;
+}
+
 // Randomized backtracking. Tighter outer constraints go first. A mask is
 // kept only when every already-assigned neighbor agrees on the shared edge.
-// The all-zero hive matches the rules and is rejected.
+// Roads stay one piece. A single-crossing tile may appear at most twice.
+// The all-zero hive is rejected. IMPOSSIBLE picks a buildable frame or a
+// contradictory one before the search starts.
 export function generateHive(rnd: () => number): Tile[] {
   const cells = buildCells();
+  const assigned = new Array<number>(cells.length).fill(-1);
+  for (let index = 0; index < cells.length; index++) {
+    if (radius(cells[index].q, cells[index].r) > STRUCTURE_R) assigned[index] = 0;
+  }
   const order = cells
     .map((_, index) => index)
+    .filter((index) => assigned[index] < 0)
     .sort((a, b) => {
       const span = (outer: number) => 1 << (6 - countBits(outer));
       return span(cells[a].outer) - span(cells[b].outer) || a - b;
     });
-  const assigned = new Array<number>(cells.length).fill(-1);
+  let stubs = 0;
+  const wantImpossible = rnd() < IMPOSSIBLE;
 
   const legal = (index: number): number[] => {
     const cell = cells[index];
     const options: number[] = [];
     for (let mask = 0; mask < 64; mask++) {
       if (mask & cell.outer) continue;
+      if (countBits(mask) === 1) continue;
+      // if (countBits(mask) === 1 && (stubs >= 2 || rnd() < 0.8)) continue;
       let fits = true;
       for (let side = 0; side < 6; side++) {
         const neighbor = cell.neighbors[side];
@@ -144,13 +240,20 @@ export function generateHive(rnd: () => number): Tile[] {
   };
 
   const search = (step: number): boolean => {
-    if (step === order.length) return assigned.some((mask) => mask !== 0);
+    if (!wantImpossible && !isPossible(cells, assigned)) return false;
+    if (step === order.length) {
+      const formed = assigned.some((mask) => mask !== 0) && !piecesSplit(cells, assigned);
+      return formed && isPossible(cells, assigned) !== wantImpossible;
+    }
     const index = order[step];
     const options = legal(index);
     shuffle(options, rnd);
     for (const mask of options) {
+      const stub = countBits(mask) === 1;
       assigned[index] = mask;
-      if (search(step + 1)) return true;
+      if (stub) stubs++;
+      if (!piecesSplit(cells, assigned) && search(step + 1)) return true;
+      if (stub) stubs--;
       assigned[index] = -1;
     }
     return false;
