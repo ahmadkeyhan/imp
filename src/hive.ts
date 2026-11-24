@@ -13,7 +13,7 @@ const HEX_CY = 80*Math.sin(Math.PI/3);
 
 // Chance the hive is an impossible object. 0 keeps every structure buildable
 // in 3D. 1 keeps only structures whose beams fail to close.
-export const IMPOSSIBLE = 1;
+export const IMPOSSIBLE = .99;
 
 // Sides 0 and 3 step x, sides 1 and 4 step y, sides 2 and 5 step z.
 // Opposite sides step opposite ways. A loop that does not return to the same
@@ -21,12 +21,58 @@ export const IMPOSSIBLE = 1;
 const AXIS = [0, 1, 2, 0, 1, 2];
 const STEP = [-1, -1, -1, 1, 1, 1];
 
-// The board is two rings. Beams stay inside the center and the first ring.
+// The board is the center and two rings. A footprint picks the cells beams may use.
 const HIVE_R = 2;
-const STRUCTURE_R = 1;
 
 function radius(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
+}
+
+type Inside = (q: number, r: number) => boolean;
+
+type Footprint = {
+  name: string;
+  weight: number;
+  pick: (rnd: () => number) => Inside;
+};
+
+const TWIN_AXES: ReadonlyArray<readonly [number, number]> = [
+  [1, 0],
+  [0, 1],
+  [1, -1],
+];
+
+const FOOTPRINTS: Footprint[] = [
+  { name: 'Hive', weight: 30, pick: () => (q, r) => radius(q, r) <= 2 },
+  { name: 'Ring', weight: 20, pick: () => (q, r) => radius(q, r) >= 1 && radius(q, r) <= 2 },
+  {
+    name: 'Triangle',
+    weight: 20,
+    pick: (rnd) => {
+      const flip = rnd() < 0.5 ? 1 : -1;
+      return (q, r) => Math.max(flip * q, flip * r, flip * -(q + r)) <= 1;
+    },
+  },
+  {
+    name: 'Twin',
+    weight: 15,
+    pick: (rnd) => {
+      const [dq, dr] = TWIN_AXES[Math.floor(rnd() * TWIN_AXES.length)];
+      return (q, r) => radius(q - dq, r - dr) <= 1 || radius(q + dq, r + dr) <= 1;
+    },
+  },
+  { name: 'Core', weight: 15, pick: () => (q, r) => radius(q, r) <= 1 },
+];
+
+function pickFootprint(rnd: () => number): { name: string; inside: Inside } {
+  const total = FOOTPRINTS.reduce((sum, footprint) => sum + footprint.weight, 0);
+  let roll = rnd() * total;
+  for (const footprint of FOOTPRINTS) {
+    roll -= footprint.weight;
+    if (roll < 0) return { name: footprint.name, inside: footprint.pick(rnd) };
+  }
+  const last = FOOTPRINTS[FOOTPRINTS.length - 1];
+  return { name: last.name, inside: last.pick(rnd) };
 }
 
 // Screen step from (q, r) to a neighbor. Index is the side digit.
@@ -90,7 +136,7 @@ function bit(mask: number, side: number): number {
   return (mask >> (5 - side)) & 1;
 }
 
-function buildCells(): Cell[] {
+function buildCells(inside: Inside): Cell[] {
   const coords: { q: number; r: number }[] = [];
   for (let q = -HIVE_R; q <= HIVE_R; q++) {
     for (let r = -HIVE_R; r <= HIVE_R; r++) {
@@ -101,12 +147,12 @@ function buildCells(): Cell[] {
   const index = new Map(coords.map((cell, i) => [`${cell.q},${cell.r}`, i]));
   return coords.map((cell) => {
     let outer = 0;
-    const inside = radius(cell.q, cell.r) <= STRUCTURE_R;
+    const open = inside(cell.q, cell.r);
     const neighbors = NEIGHBORS.map(([dq, dr], side) => {
       const nq = cell.q + dq;
       const nr = cell.r + dr;
       const next = index.get(`${nq},${nr}`);
-      if (!inside || next === undefined || radius(nq, nr) > STRUCTURE_R) {
+      if (!open || next === undefined || !inside(nq, nr)) {
         outer |= 1 << (5 - side);
         return -1;
       }
@@ -196,16 +242,22 @@ function isPossible(cells: Cell[], assigned: number[]): boolean {
   return true;
 }
 
+export type Hive = {
+  footprint: string;
+  tiles: Tile[];
+};
+
 // Randomized backtracking. Tighter outer constraints go first. A mask is
 // kept only when every already-assigned neighbor agrees on the shared edge.
 // Roads stay one piece. A single-crossing tile may appear at most twice.
 // The all-zero hive is rejected. IMPOSSIBLE picks a buildable frame or a
 // contradictory one before the search starts.
-export function generateHive(rnd: () => number): Tile[] {
-  const cells = buildCells();
+export function generateHive(rnd: () => number): Hive {
+  const footprint = pickFootprint(rnd);
+  const cells = buildCells(footprint.inside);
   const assigned = new Array<number>(cells.length).fill(-1);
   for (let index = 0; index < cells.length; index++) {
-    if (radius(cells[index].q, cells[index].r) > STRUCTURE_R) assigned[index] = 0;
+    if (!footprint.inside(cells[index].q, cells[index].r)) assigned[index] = 0;
   }
   const order = cells
     .map((_, index) => index)
@@ -261,7 +313,7 @@ export function generateHive(rnd: () => number): Tile[] {
 
   if (!search(0)) throw new Error('hive: no structure matched the edge rules');
 
-  return cells.map((cell, index) => {
+  const tiles = cells.map((cell, index) => {
     const name = maskName(assigned[index]);
     return {
       q: cell.q,
@@ -271,6 +323,87 @@ export function generateHive(rnd: () => number): Tile[] {
       ...slot(cell.q, cell.r),
     };
   });
+  return { footprint: footprint.name, tiles };
+}
+
+export type Measure = {
+  cells: number;
+  loops: number;
+  paradoxes: number;
+  buildable: boolean;
+};
+
+// Every enclosed opening in the frame is bounded by a loop of beams. Walking a
+// loop in 3D lands back at the start, or off by a whole number of steps along
+// the view ray (1, -1, 1). A loop that lands off the start is a paradox.
+export function measureHive(tiles: Tile[]): Measure {
+  const index = new Map(tiles.map((tile, i) => [`${tile.q},${tile.r}`, i]));
+  const mask = tiles.map((tile) => Number.parseInt(tile.name, 2));
+  const neighbor = (i: number, side: number): number => {
+    const [dq, dr] = NEIGHBORS[side];
+    return index.get(`${tiles[i].q + dq},${tiles[i].r + dr}`) ?? -1;
+  };
+
+  const placed: Array<[number, number, number] | null> = tiles.map(() => null);
+  for (let start = 0; start < tiles.length; start++) {
+    if (!mask[start] || placed[start]) continue;
+    placed[start] = [0, 0, 0];
+    const stack = [start];
+    while (stack.length) {
+      const i = stack.pop() as number;
+      for (let side = 0; side < 6; side++) {
+        if (!bit(mask[i], side)) continue;
+        const j = neighbor(i, side);
+        if (j < 0 || placed[j]) continue;
+        const next = [...(placed[i] as [number, number, number])] as [number, number, number];
+        next[AXIS[side]] += STEP[side];
+        placed[j] = next;
+        stack.push(j);
+      }
+    }
+  }
+
+  const twist = (i: number, side: number, j: number): number => {
+    const from = placed[i] as [number, number, number];
+    const to = placed[j] as [number, number, number];
+    const step = [0, 0, 0];
+    step[AXIS[side]] = STEP[side];
+    return from[0] + step[0] - to[0];
+  };
+
+  const seen = new Set<number>();
+  let loops = 0;
+  let paradoxes = 0;
+  for (let i = 0; i < tiles.length; i++) {
+    for (let side = 0; side < 6; side++) {
+      if (!bit(mask[i], side) || seen.has(i * 6 + side)) continue;
+      let at = i;
+      let dir = side;
+      let winding = 0;
+      let area = 0;
+      do {
+        seen.add(at * 6 + dir);
+        const next = neighbor(at, dir);
+        winding += twist(at, dir, next);
+        area += tiles[at].x * tiles[next].y - tiles[next].x * tiles[at].y;
+        const back = (dir + 3) % 6;
+        let turn = 1;
+        while (!bit(mask[next], (back + turn) % 6)) turn++;
+        at = next;
+        dir = (back + turn) % 6;
+      } while (at !== i || dir !== side);
+      if (area >= -1e-6) continue;
+      loops++;
+      if (winding !== 0) paradoxes++;
+    }
+  }
+
+  return {
+    cells: mask.filter(Boolean).length,
+    loops,
+    paradoxes,
+    buildable: paradoxes === 0,
+  };
 }
 
 function countBits(value: number): number {

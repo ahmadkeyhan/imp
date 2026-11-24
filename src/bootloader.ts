@@ -19,6 +19,7 @@ export type BootContext = {
   isCapture: boolean;
   capture: () => void;
   rnd: () => number;
+  setFeatures: (features: Record<string, string | number | boolean>) => void;
 };
 
 export function initBoot(): BootContext {
@@ -28,5 +29,6 @@ export function initBoot(): BootContext {
     isCapture: api.isCapture,
     capture: () => api.capture(),
     rnd: () => api.rnd(),
+    setFeatures: (features) => api.setFeatures(features),
   };
 }

@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { initBoot } from './bootloader.ts';
 import type { BootContext } from './bootloader.ts';
-import { drawHive } from './draw.ts';
+import { hiveFeatures } from './features.ts';
+import { HiveSvg } from './HiveSvg.tsx';
 import { ART_H, ART_W, generateHive } from './hive.ts';
-import type { Tile } from './hive.ts';
+import type { Hive } from './hive.ts';
 
 export default function App() {
   const bootRef = useRef<BootContext | null>(null);
-  const hiveRef = useRef<Tile[] | null>(null);
+  const hiveRef = useRef<Hive | null>(null);
   if (!bootRef.current) bootRef.current = initBoot();
   if (!hiveRef.current) hiveRef.current = generateHive(bootRef.current.rnd);
 
-  const tiles = hiveRef.current;
+  const hive = hiveRef.current;
   const [box, setBox] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -24,11 +25,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    bootRef.current?.setFeatures(hiveFeatures(hive));
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => bootRef.current?.capture());
     });
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [hive]);
 
   const pad = 0.06;
   const scale = Math.min(
@@ -37,11 +39,10 @@ export default function App() {
   );
   const width = ART_W * scale;
   const height = ART_H * scale;
-  const marks = drawHive(tiles);
 
   return (
-    <svg
-      viewBox={`0 0 ${ART_W} ${ART_H}`}
+    <HiveSvg
+      tiles={hive.tiles}
       width={width}
       height={height}
       style={{
@@ -49,18 +50,6 @@ export default function App() {
         left: (box.width - width) / 2,
         top: (box.height - height) / 2,
       }}
-    >
-      {marks.map((mark, index) => (
-        <polygon
-          key={index}
-          points={mark.pts}
-          fill={mark.fill}
-          stroke={mark.stroke}
-          strokeWidth={mark.width}
-          strokeLinejoin="round"
-          strokeLinecap="butt"
-        />
-      ))}
-    </svg>
+    />
   );
 }
