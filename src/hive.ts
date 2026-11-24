@@ -23,7 +23,7 @@ const STEP = [-1, -1, -1, 1, 1, 1];
 
 // The board is two rings. Beams stay inside the center and the first ring.
 const HIVE_R = 2;
-const STRUCTURE_R = 2;
+const STRUCTURE_R = 1;
 
 function radius(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
