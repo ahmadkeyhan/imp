@@ -21,14 +21,16 @@ function place(width: number, height: number, tiles: Tile[]): Placed[] {
   );
   const ox = (width - ART_W * scale) / 2;
   const oy = (height - ART_H * scale) / 2;
-  return tiles.map((tile) => ({
-    key: `${tile.q},${tile.r}`,
-    name: tile.name,
-    left: ox + tile.x * scale,
-    top: oy + tile.y * scale,
-    width: TILE_W * scale,
-    height: TILE_H * scale,
-  }));
+  return tiles.flatMap((tile) =>
+    (tile.layers ?? [tile.name]).map((name, layer) => ({
+      key: `${tile.q},${tile.r},${layer}`,
+      name,
+      left: ox + tile.x * scale,
+      top: oy + tile.y * scale,
+      width: TILE_W * scale,
+      height: TILE_H * scale,
+    })),
+  );
 }
 
 // Each file's <style> uses the same class names. A shadow root keeps those
@@ -89,7 +91,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    const names = [...new Set(tiles.map((tile) => tile.name))];
+    const names = [...new Set(tiles.flatMap((tile) => tile.layers ?? [tile.name]))];
     Promise.all(
       names.map(async (name) => {
         const text = await fetch(`${import.meta.env.BASE_URL}assets/${name}.svg`).then((response) => response.text());
