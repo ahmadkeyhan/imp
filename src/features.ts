@@ -1,21 +1,28 @@
 import { measureHive } from './hive.ts';
 import type { Hive } from './hive.ts';
+import type { Style } from './style.ts';
 
 export type Features = {
   Footprint: string;
+  Topology: string;
+  Symmetry: string;
+  Density: string;
+  Palette: string;
   Cells: number;
   Loops: number;
   Paradoxes: number;
-  Buildable: string;
 };
 
-export function hiveFeatures(hive: Hive): Features {
+export function hiveFeatures(hive: Hive, style: Style): Features {
   const measure = measureHive(hive.tiles);
   return {
     Footprint: hive.footprint,
+    Topology: measure.topology,
+    Symmetry: measure.symmetry,
+    Density: hive.density,
+    Palette: style.palette.name,
     Cells: measure.cells,
     Loops: measure.loops,
     Paradoxes: measure.paradoxes,
-    Buildable: measure.buildable ? 'Yes' : 'No',
   };
 }

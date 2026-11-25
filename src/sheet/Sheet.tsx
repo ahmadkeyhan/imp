@@ -5,10 +5,13 @@ import { HiveSvg } from '../HiveSvg.tsx';
 import { ART_H, ART_W, generateHive } from '../hive.ts';
 import type { Hive } from '../hive.ts';
 import { randomHash, seeded } from '../seed.ts';
+import { pickStyle } from '../style.ts';
+import type { Style } from '../style.ts';
 
 type Entry = {
   hash: string;
   hive: Hive;
+  art: Style;
   features: Features;
   ms: number;
   /** Set when another seed in this batch drew the same beams. */
@@ -17,6 +20,16 @@ type Entry = {
 
 const SIZES = [48, 96, 192];
 const THUMB = 220;
+const TRAITS: Array<keyof Features> = [
+  'Topology',
+  'Footprint',
+  'Symmetry',
+  'Density',
+  'Palette',
+  'Paradoxes',
+  'Loops',
+  'Cells',
+];
 
 function structureKey(hive: Hive): string {
   return hive.tiles
@@ -28,10 +41,12 @@ function structureKey(hive: Hive): string {
 function makeBatch(count: number): Entry[] {
   const entries: Entry[] = Array.from({ length: count }, () => {
     const hash = randomHash();
+    const rnd = seeded(hash);
     const start = performance.now();
-    const hive = generateHive(seeded(hash));
+    const hive = generateHive(rnd);
     const ms = performance.now() - start;
-    return { hash, hive, features: hiveFeatures(hive), ms, match: null };
+    const art = pickStyle(rnd);
+    return { hash, hive, art, features: hiveFeatures(hive, art), ms, match: null };
   });
   const groups = new Map<string, Entry[]>();
   for (const entry of entries) {
@@ -96,20 +111,25 @@ function Histogram({ title, rows, total, active, onPick }: {
 export default function Sheet() {
   const [size, setSize] = useState(96);
   const [batch, setBatch] = useState(() => makeBatch(96));
-  const [footprint, setFootprint] = useState<string | null>(null);
-  const [paradoxes, setParadoxes] = useState<string | null>(null);
+  const [filters, setFilters] = useState<Partial<Record<keyof Features, string>>>({});
 
   const shown = useMemo(
     () =>
       batch
-        .filter(
-          (entry) =>
-            (footprint === null || entry.features.Footprint === footprint) &&
-            (paradoxes === null || String(entry.features.Paradoxes) === paradoxes),
+        .filter((entry) =>
+          TRAITS.every((trait) => filters[trait] === undefined || String(entry.features[trait]) === filters[trait]),
         )
         .sort((a, b) => (a.match ?? Infinity) - (b.match ?? Infinity)),
-    [batch, footprint, paradoxes],
+    [batch, filters],
   );
+
+  const pick = (trait: keyof Features, value: string | null) =>
+    setFilters((current) => {
+      const next = { ...current };
+      if (value === null) delete next[trait];
+      else next[trait] = value;
+      return next;
+    });
 
   const regenerate = (count: number) => {
     setSize(count);
@@ -118,7 +138,6 @@ export default function Sheet() {
 
   const slowest = Math.max(...batch.map((entry) => entry.ms));
   const average = batch.reduce((sum, entry) => sum + entry.ms, 0) / batch.length;
-  const buildable = batch.filter((entry) => entry.features.Buildable === 'Yes').length;
   const matched = batch.filter((entry) => entry.match !== null).length;
   const matchGroups = new Set(batch.map((entry) => entry.match).filter((match) => match !== null)).size;
 
@@ -137,41 +156,23 @@ export default function Sheet() {
           </button>
         </div>
         <p className="meta">
-          {batch.length} seeds · {buildable} buildable · {matched} matching {matched === 1 ? 'seed' : 'seeds'} in{' '}
+          {batch.length} seeds · {matched} matching {matched === 1 ? 'seed' : 'seeds'} in{' '}
           {matchGroups} {matchGroups === 1 ? 'shape' : 'shapes'} · generation avg {average.toFixed(1)} ms, slowest{' '}
           {slowest.toFixed(1)} ms · showing {shown.length}
         </p>
       </header>
 
       <div className="stats">
-        <Histogram
-          title="Footprint"
-          rows={tally(batch, (entry) => entry.features.Footprint)}
-          total={batch.length}
-          active={footprint}
-          onPick={setFootprint}
-        />
-        <Histogram
-          title="Paradoxes"
-          rows={tally(batch, (entry) => entry.features.Paradoxes)}
-          total={batch.length}
-          active={paradoxes}
-          onPick={setParadoxes}
-        />
-        <Histogram
-          title="Loops"
-          rows={tally(batch, (entry) => entry.features.Loops)}
-          total={batch.length}
-          active={null}
-          onPick={() => {}}
-        />
-        <Histogram
-          title="Cells"
-          rows={tally(batch, (entry) => entry.features.Cells)}
-          total={batch.length}
-          active={null}
-          onPick={() => {}}
-        />
+        {TRAITS.map((trait) => (
+          <Histogram
+            key={trait}
+            title={trait}
+            rows={tally(batch, (entry) => entry.features[trait])}
+            total={batch.length}
+            active={filters[trait] ?? null}
+            onPick={(value) => pick(trait, value)}
+          />
+        ))}
       </div>
 
       <div className="grid">
@@ -183,13 +184,22 @@ export default function Sheet() {
             target="_blank"
             rel="noreferrer"
           >
-            <HiveSvg tiles={entry.hive.tiles} width={THUMB} height={(THUMB * ART_H) / ART_W} />
+            <HiveSvg
+              tiles={entry.hive.tiles}
+              art={entry.art}
+              width={THUMB}
+              height={(THUMB * ART_H) / ART_W}
+              style={{ background: entry.art.palette.background, borderRadius: 4 }}
+            />
             <span className="caption">
-              <strong>{entry.features.Footprint}</strong>
+              <strong>{entry.features.Topology}</strong>
+              {entry.features.Symmetry !== 'None' && <strong>{entry.features.Symmetry}</strong>}
               {entry.match !== null && <em>match {entry.match}</em>}
               <span>
-                {entry.features.Paradoxes} of {entry.features.Loops} loops break · {entry.features.Cells} cells
+                {entry.features.Footprint} · {entry.features.Density} · {entry.features.Paradoxes} of{' '}
+                {entry.features.Loops} loops break
               </span>
+              <span>{entry.features.Palette}</span>
               <code>{entry.hash.slice(0, 8)}</code>
             </span>
           </a>

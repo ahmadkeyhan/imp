@@ -1,5 +1,6 @@
 import { TILE_H, TILE_W } from './hive.ts';
 import type { Tile } from './hive.ts';
+import type { Style } from './style.ts';
 
 // Square rods on the three hex axes. A joint is a cube at the cell center;
 // each crossing leaves that cube and runs to the shared edge. The camera
@@ -34,18 +35,15 @@ const NEIGHBORS = [
 
 const CAMERA = [1, -1, 1];
 
-const FILL: Record<string, string> = {
-  '0+': '#686868',
-  '1-': '#9a9a9a',
-  '2+': '#484848',
-};
-
 export type Mark = {
   pts: string;
   fill: string;
   stroke: string;
   width: number;
   depth: number;
+  /** Tile index this mark belongs to, or -1 for the grid. */
+  cell: number;
+  dash?: string;
 };
 
 type Coord = [number, number, number];
@@ -100,8 +98,6 @@ function hexVertices(cx: number, cy: number): Array<[number, number]> {
 }
 
 const STROKE = 1.1;
-const OUTER_STROKE = '#2c2c2c';
-const OUTWARD_STROKE = '#d9d9d9';
 
 function pointKey(point: { x: number; y: number }): string {
   const snap = (value: number) => (Math.round(value * 10) / 10).toFixed(1);
@@ -118,13 +114,14 @@ function dot(a: Coord, b: Coord): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function channel(hex: string): number {
-  return Number.parseInt(hex.slice(1, 3), 16);
+function luminance(hex: string): number {
+  const value = (offset: number) => Number.parseInt(hex.slice(offset, offset + 2), 16);
+  return 0.2126 * value(1) + 0.7152 * value(3) + 0.0722 * value(5);
 }
 
 type FaceNote = {
   normal: string;
-  cell: string;
+  cell: number;
   at: Coord;
   edge: Coord;
   depth: number;
@@ -139,7 +136,13 @@ function inward(face: FaceNote, other: FaceNote): boolean {
   ]) > 0;
 }
 
-export function drawHive(tiles: Tile[]): Mark[] {
+export function drawHive(tiles: Tile[], style: Style): Mark[] {
+  const { palette } = style;
+  const FILL: Record<string, string> = {
+    '0+': palette.right,
+    '1-': palette.top,
+    '2+': palette.left,
+  };
   const marks: Mark[] = [];
   const byCell = new Map(tiles.map((tile) => [`${tile.q},${tile.r}`, tile]));
   const seams = new Map<string, { pts: string; faces: FaceNote[]; depth: number }>();
@@ -165,7 +168,7 @@ export function drawHive(tiles: Tile[]): Mark[] {
     });
   };
 
-  for (const tile of tiles) {
+  tiles.forEach((tile, cell) => {
     const cx = tile.x + TILE_W / 2;
     const cy = tile.y + TILE_H / 2;
     const vertices = hexVertices(cx, cy);
@@ -176,18 +179,21 @@ export function drawHive(tiles: Tile[]): Mark[] {
       const neighbor = byCell.get(`${tile.q + dq},${tile.r + dr}`);
       if (neighbor?.name[(digit + 3) % 6] === '1') continue;
       if (neighbor && (tile.q > neighbor.q || (tile.q === neighbor.q && tile.r > neighbor.r))) continue;
+      // The tile list is the footprint, so these dashes draw that shape, empty cells included.
       const [x0, y0] = vertices[edge];
       const [x1, y1] = vertices[(edge + 1) % 6];
       marks.push({
         pts: `${x0.toFixed(2)},${y0.toFixed(2)} ${x1.toFixed(2)},${y1.toFixed(2)}`,
         fill: 'none',
-        stroke: '#404040',
-        width: 1,
+        stroke: palette.grid,
+        width: 1.1,
         depth: -1e6 + cy,
+        cell: -1,
+        dash: '7 6',
       });
     }
 
-    if (tile.name === '000000') continue;
+    if (tile.name === '000000') return;
     const open = [...tile.name].map((digit) => digit === '1');
     const push = (corners: Coord[], axis: number, sign: number) => {
       if (!facing(axis, sign)) return;
@@ -200,7 +206,7 @@ export function drawHive(tiles: Tile[]): Mark[] {
         return project(cx, cy, coord);
       });
       const pts = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
-      const key = `${axis}${sign < 0 ? '-' : '+'}` as keyof typeof FILL;
+      const key = `${axis}${sign < 0 ? '-' : '+'}`;
       const fill = FILL[key];
       const at: Coord = [0, 0, 0];
       for (const corner of corners) {
@@ -217,6 +223,7 @@ export function drawHive(tiles: Tile[]): Mark[] {
         stroke: fill,
         width: 0.4,
         depth,
+        cell,
       });
       for (let i = 0; i < corners.length; i++) {
         const next = (i + 1) % corners.length;
@@ -227,7 +234,7 @@ export function drawHive(tiles: Tile[]): Mark[] {
         ];
         noteEdge(points[i], points[next], {
           normal: key,
-          cell: `${tile.q},${tile.r}`,
+          cell,
           at,
           edge,
           depth,
@@ -257,12 +264,16 @@ export function drawHive(tiles: Tile[]): Mark[] {
         }
       }
     }
-  }
+  });
 
   for (const seam of seams.values()) {
     const normals = new Set(seam.faces.map((face) => face.normal));
     if (normals.size === 1 && seam.faces.length > 1) continue;
-    let stroke = OUTER_STROKE;
+    let stroke = palette.outer;
+    let owner = seam.faces[0];
+    for (const face of seam.faces) {
+      if (face.depth > owner.depth) owner = face;
+    }
     if (normals.size > 1) {
       let best: [FaceNote, FaceNote] | null = null;
       let bestScore = -Infinity;
@@ -280,8 +291,8 @@ export function drawHive(tiles: Tile[]): Mark[] {
       if (best) {
         const fillA = FILL[best[0].normal];
         const fillB = FILL[best[1].normal];
-        const brighter = channel(fillA) >= channel(fillB) ? fillA : fillB;
-        stroke = inward(best[0], best[1]) ? brighter : OUTWARD_STROKE;
+        const brighter = luminance(fillA) >= luminance(fillB) ? fillA : fillB;
+        stroke = inward(best[0], best[1]) ? brighter : palette.outward;
       }
     }
     marks.push({
@@ -290,6 +301,7 @@ export function drawHive(tiles: Tile[]): Mark[] {
       stroke,
       width: STROKE,
       depth: seam.depth + 0.5,
+      cell: owner.cell,
     });
   }
 

@@ -5,14 +5,20 @@ import { hiveFeatures } from './features.ts';
 import { HiveSvg } from './HiveSvg.tsx';
 import { ART_H, ART_W, generateHive } from './hive.ts';
 import type { Hive } from './hive.ts';
+import { pickStyle } from './style.ts';
+import type { Style } from './style.ts';
 
 export default function App() {
   const bootRef = useRef<BootContext | null>(null);
-  const hiveRef = useRef<Hive | null>(null);
+  const hiveRef = useRef<{ hive: Hive; art: Style } | null>(null);
   if (!bootRef.current) bootRef.current = initBoot();
-  if (!hiveRef.current) hiveRef.current = generateHive(bootRef.current.rnd);
+  if (!hiveRef.current) {
+    const hive = generateHive(bootRef.current.rnd);
+    hiveRef.current = { hive, art: pickStyle(bootRef.current.rnd) };
+  }
 
-  const hive = hiveRef.current;
+  const { hive, art } = hiveRef.current;
+  const capture = bootRef.current.isCapture;
   const [box, setBox] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -25,12 +31,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    bootRef.current?.setFeatures(hiveFeatures(hive));
+    document.documentElement.style.background = art.palette.background;
+    document.body.style.background = art.palette.background;
+    bootRef.current?.setFeatures(hiveFeatures(hive, art));
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => bootRef.current?.capture());
     });
     return () => cancelAnimationFrame(frame);
-  }, [hive]);
+  }, [hive, art]);
 
   const pad = 0.06;
   const scale = Math.min(
@@ -43,8 +51,10 @@ export default function App() {
   return (
     <HiveSvg
       tiles={hive.tiles}
+      art={art}
       width={width}
       height={height}
+      animate={!capture}
       style={{
         position: 'absolute',
         left: (box.width - width) / 2,

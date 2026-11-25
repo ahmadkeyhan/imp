@@ -61,6 +61,58 @@ const FOOTPRINTS: Footprint[] = [
   // { name: 'Core', weight: 25, pick: () => (q, r) => radius(q, r) <= 1 },
 ];
 
+// How hard the search leans toward empty cells. Sparse frames tend to come out
+// as one loop, a figure-8, or a chain. Dense frames tend to be lattices.
+const DENSITIES = [
+  { name: 'Sparse', weight: 30, bias: 0.3 },
+  { name: 'Medium', weight: 45, bias: 0 },
+  { name: 'Dense', weight: 25, bias: -0.2 },
+];
+
+// Share of seeds built as a mirror image of themselves across one hex axis.
+const SYMMETRIC = 0.08;
+
+function pickWeighted<T extends { weight: number }>(items: T[], rnd: () => number): T {
+  const total = items.reduce((sum, item) => sum + item.weight, 0);
+  let roll = rnd() * total;
+  for (const item of items) {
+    roll -= item.weight;
+    if (roll < 0) return item;
+  }
+  return items[items.length - 1];
+}
+
+// Reflection across a hex axis, then k steps of a 60 degree turn. Side s of a
+// cell becomes side MIRROR_SIDE[s] + k of its image. Each of the six is its own inverse.
+const MIRROR_SIDE = [2, 1, 0, 5, 4, 3];
+
+function turn(q: number, r: number, steps: number): [number, number] {
+  let a = q;
+  let b = r;
+  for (let i = 0; i < steps; i++) [a, b] = [-b, a + b];
+  return [a, b];
+}
+
+function mirrorCell(q: number, r: number, k: number): [number, number] {
+  return turn(-q, r + q, k);
+}
+
+function mapMask(mask: number, side: (s: number) => number): number {
+  let out = 0;
+  for (let s = 0; s < 6; s++) {
+    if (bit(mask, s)) out |= 1 << (5 - side(s));
+  }
+  return out;
+}
+
+function mirrorMask(mask: number, k: number): number {
+  return mapMask(mask, (s) => (MIRROR_SIDE[s] + k) % 6);
+}
+
+function turnMask(mask: number, steps: number): number {
+  return mapMask(mask, (s) => (s + steps) % 6);
+}
+
 function pickFootprint(rnd: () => number): { name: string; inside: Inside } {
   const total = FOOTPRINTS.reduce((sum, footprint) => sum + footprint.weight, 0);
   let roll = rnd() * total;
@@ -159,13 +211,13 @@ function buildCells(inside: Inside): Cell[] {
   });
 }
 
-function shuffle(items: number[], rnd: () => number) {
-  for (let i = items.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    const swap = items[i];
-    items[i] = items[j];
-    items[j] = swap;
-  }
+// Random order, tilted by crossing count. A positive bias puts masks with
+// fewer crossings first.
+function tilt(items: number[], bias: number, rnd: () => number): number[] {
+  return items
+    .map((mask) => ({ mask, key: rnd() + bias * countBits(mask) }))
+    .sort((a, b) => a.key - b.key)
+    .map((item) => item.mask);
 }
 
 function slot(q: number, r: number): { x: number; y: number } {
@@ -241,6 +293,7 @@ function isPossible(cells: Cell[], assigned: number[]): boolean {
 
 export type Hive = {
   footprint: string;
+  density: string;
   tiles: Tile[];
 };
 
@@ -276,7 +329,9 @@ function spans(cells: Cell[], assigned: number[], inside: Inside): boolean {
 // Roads stay one piece. A single-crossing tile may appear at most twice.
 // The all-zero hive is rejected. The beams must reach every side of the
 // footprint, so one loop cannot be slid to a second place. IMPOSSIBLE picks
-// a buildable frame or a contradictory one before the search starts.
+// a buildable frame or a contradictory one before the search starts. A rare
+// seed copies every mask onto its mirror cell, across an axis the footprint
+// is symmetric about.
 export function generateHive(rnd: () => number): Hive {
   const footprint = pickFootprint(rnd);
   const cells = buildCells(footprint.inside);
@@ -284,6 +339,24 @@ export function generateHive(rnd: () => number): Hive {
   for (let index = 0; index < cells.length; index++) {
     if (!footprint.inside(cells[index].q, cells[index].r)) assigned[index] = 0;
   }
+
+  const lookup = new Map(cells.map((cell, i) => [`${cell.q},${cell.r}`, i]));
+  const axes = [0, 1, 2, 3, 4, 5].filter((k) =>
+    cells.every((cell) => {
+      const [mq, mr] = mirrorCell(cell.q, cell.r, k);
+      return footprint.inside(cell.q, cell.r) === footprint.inside(mq, mr);
+    }),
+  );
+  const mirror = rnd() < SYMMETRIC && axes.length ? axes[Math.floor(rnd() * axes.length)] : -1;
+  // A mirrored half, or the thin ring, that also leans empty has only a
+  // handful of answers.
+  const sparse = mirror < 0 && footprint.name !== 'Ring';
+  const density = pickWeighted(sparse ? DENSITIES : DENSITIES.filter((item) => item.name !== 'Sparse'), rnd);
+  const partner = cells.map((cell) => {
+    if (mirror < 0) return -1;
+    const [mq, mr] = mirrorCell(cell.q, cell.r, mirror);
+    return lookup.get(`${mq},${mr}`) ?? -1;
+  });
   const order = cells
     .map((_, index) => index)
     .filter((index) => assigned[index] < 0)
@@ -324,45 +397,128 @@ export function generateHive(rnd: () => number): Hive {
       // that reaches every side of its footprint has one position.
       return formed && spans(cells, assigned, footprint.inside) && isPossible(cells, assigned) !== wantImpossible;
     }
-    const index = order[step];
-    const options = legal(index);
-    shuffle(options, rnd);
+    const at = order[step];
+    let options = tilt(legal(at), density.bias, rnd);
+    if (mirror >= 0) {
+      const twin = partner[at];
+      if (twin === at) {
+        options = options.filter((mask) => mirrorMask(mask, mirror) === mask);
+      } else if (assigned[twin] >= 0) {
+        const forced = mirrorMask(assigned[twin], mirror);
+        options = options.includes(forced) ? [forced] : [];
+      }
+    }
     for (const mask of options) {
       const stub = countBits(mask) === 1;
-      assigned[index] = mask;
+      assigned[at] = mask;
       if (stub) stubs++;
       if (!piecesSplit(cells, assigned) && search(step + 1)) return true;
       if (stub) stubs--;
-      assigned[index] = -1;
+      assigned[at] = -1;
     }
     return false;
   };
 
-  if (!search(0)) throw new Error('hive: no structure matched the edge rules');
+  // Small frames that land on a mirror image by chance are a handful of shapes
+  // that repeat, so symmetry only comes from the roll. A rejected frame starts
+  // a fresh search. Backtracking from it would settle on its nearest neighbor.
+  const mirrored = () =>
+    [0, 1, 2, 3, 4, 5].some((k) =>
+      cells.every((cell, i) => {
+        const [mq, mr] = mirrorCell(cell.q, cell.r, k);
+        const j = lookup.get(`${mq},${mr}`);
+        return j !== undefined && assigned[j] === mirrorMask(assigned[i], k);
+      }),
+    );
+  for (let attempt = 0; ; attempt++) {
+    if (!search(0)) throw new Error('hive: no structure matched the edge rules');
+    if (mirror >= 0 || attempt >= 4 || !mirrored()) break;
+    for (const at of order) assigned[at] = -1;
+    stubs = 0;
+  }
 
-  const tiles = cells.map((cell, index) => {
+  const tiles = cells.flatMap((cell, index) => {
+    if (!footprint.inside(cell.q, cell.r)) return [];
     const name = maskName(assigned[index]);
-    return {
+    return [{
       q: cell.q,
       r: cell.r,
       name,
       layers: stackLayers(name, rnd),
       ...slot(cell.q, cell.r),
-    };
+    }];
   });
-  return { footprint: footprint.name, tiles };
+  return { footprint: footprint.name, density: density.name, tiles };
 }
+
+export type Point = { x: number; y: number };
 
 export type Measure = {
   cells: number;
   loops: number;
   paradoxes: number;
-  buildable: boolean;
+  topology: string;
+  symmetry: string;
+  /** Cell centers around each loop that fails to close, in walking order. */
+  broken: Point[][];
+  /** Step at which each tile appears in the build, or -1 for an empty tile. */
+  order: number[];
 };
+
+// Same beams on every mirror cell, or on every cell turned by 120 or 60 degrees.
+function symmetryOf(tiles: Tile[], mask: number[], index: Map<string, number>): string {
+  const holds = (map: (q: number, r: number) => [number, number], side: (m: number) => number) =>
+    tiles.every((tile, i) => {
+      const [q, r] = map(tile.q, tile.r);
+      const j = index.get(`${q},${r}`);
+      return j !== undefined && mask[j] === side(mask[i]);
+    });
+  if (holds((q, r) => turn(q, r, 1), (m) => turnMask(m, 1))) return 'Sixfold';
+  if (holds((q, r) => turn(q, r, 2), (m) => turnMask(m, 2))) return 'Threefold';
+  for (let k = 0; k < 6; k++) {
+    if (holds((q, r) => mirrorCell(q, r, k), (m) => mirrorMask(m, k))) return 'Mirror';
+  }
+  return 'None';
+}
+
+// Breadth-first from the topmost joint. Loops close where two fronts meet,
+// so the beam that completes a loop tends to land late.
+function buildOrder(tiles: Tile[], mask: number[], neighbor: (i: number, side: number) => number): number[] {
+  const order = tiles.map(() => -1);
+  let start = -1;
+  for (let i = 0; i < tiles.length; i++) {
+    if (!mask[i]) continue;
+    if (start < 0 || tiles[i].y < tiles[start].y || (tiles[i].y === tiles[start].y && tiles[i].x < tiles[start].x)) start = i;
+  }
+  if (start < 0) return order;
+  let step = 0;
+  order[start] = step++;
+  const queue = [start];
+  while (queue.length) {
+    const i = queue.shift() as number;
+    for (let side = 0; side < 6; side++) {
+      if (!bit(mask[i], side)) continue;
+      const j = neighbor(i, side);
+      if (j < 0 || order[j] >= 0) continue;
+      order[j] = step++;
+      queue.push(j);
+    }
+  }
+  return order;
+}
 
 // Every enclosed opening in the frame is bounded by a loop of beams. Walking a
 // loop in 3D lands back at the start, or off by a whole number of steps along
 // the view ray (1, -1, 1). A loop that lands off the start is a paradox.
+//
+// Topology names the whole frame, never a part of it:
+// - Penrose: one loop with three corners.
+// - Loop: one loop with more corners.
+// - Figure-8: two loops that meet at one joint.
+// - Spectacles: two loops joined by a bar.
+// - Chain: three or more loops, none sharing a beam.
+// - Theta: two loops sharing a beam.
+// - Lattice: three or more loops, some sharing beams.
 export function measureHive(tiles: Tile[]): Measure {
   const index = new Map(tiles.map((tile, i) => [`${tile.q},${tile.r}`, i]));
   const mask = tiles.map((tile) => Number.parseInt(tile.name, 2));
@@ -398,38 +554,74 @@ export function measureHive(tiles: Tile[]): Measure {
     return from[0] + step[0] - to[0];
   };
 
-  const seen = new Set<number>();
+  const center = (i: number): Point => ({ x: tiles[i].x + TILE_W / 2, y: tiles[i].y + TILE_H / 2 });
+  const faceOf = new Map<number, number>();
+  const bounded: boolean[] = [];
+  const broken: Point[][] = [];
   let loops = 0;
   let paradoxes = 0;
   for (let i = 0; i < tiles.length; i++) {
     for (let side = 0; side < 6; side++) {
-      if (!bit(mask[i], side) || seen.has(i * 6 + side)) continue;
+      if (!bit(mask[i], side) || faceOf.has(i * 6 + side)) continue;
+      const face = bounded.length;
+      const path: Point[] = [];
       let at = i;
       let dir = side;
       let winding = 0;
       let area = 0;
       do {
-        seen.add(at * 6 + dir);
+        faceOf.set(at * 6 + dir, face);
+        path.push(center(at));
         const next = neighbor(at, dir);
         winding += twist(at, dir, next);
         area += tiles[at].x * tiles[next].y - tiles[next].x * tiles[at].y;
         const back = (dir + 3) % 6;
-        let turn = 1;
-        while (!bit(mask[next], (back + turn) % 6)) turn++;
+        let step = 1;
+        while (!bit(mask[next], (back + step) % 6)) step++;
         at = next;
-        dir = (back + turn) % 6;
+        dir = (back + step) % 6;
       } while (at !== i || dir !== side);
-      if (area >= -1e-6) continue;
+      const inside = area < -1e-6;
+      bounded.push(inside);
+      if (!inside) continue;
       loops++;
-      if (winding !== 0) paradoxes++;
+      if (winding !== 0) {
+        paradoxes++;
+        broken.push(path);
+      }
     }
   }
+
+  let shared = false;
+  let bar = false;
+  let corners = 0;
+  for (let i = 0; i < tiles.length; i++) {
+    const sides: number[] = [];
+    for (let side = 0; side < 6; side++) {
+      if (!bit(mask[i], side)) continue;
+      sides.push(side);
+      const j = neighbor(i, side);
+      const left = faceOf.get(i * 6 + side) as number;
+      const right = faceOf.get(j * 6 + ((side + 3) % 6)) as number;
+      if (left === right) bar = true;
+      else if (bounded[left] && bounded[right]) shared = true;
+    }
+    if (sides.length === 2 && sides[1] - sides[0] !== 3) corners++;
+  }
+
+  let topology = 'Lattice';
+  if (loops === 1) topology = corners === 3 ? 'Penrose' : 'Loop';
+  else if (!shared) topology = loops === 2 ? (bar ? 'Spectacles' : 'Figure-8') : 'Chain';
+  else if (loops === 2) topology = 'Theta';
 
   return {
     cells: mask.filter(Boolean).length,
     loops,
     paradoxes,
-    buildable: paradoxes === 0,
+    topology,
+    symmetry: symmetryOf(tiles, mask, index),
+    broken,
+    order: buildOrder(tiles, mask, neighbor),
   };
 }
 

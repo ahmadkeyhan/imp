@@ -8,6 +8,9 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+html {
   background: #2c2c2c;
 }
 
@@ -15,4 +18,41 @@ canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.imp-build {
+  animation: imp-build 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes imp-build {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.imp-drift {
+  animation: imp-drift 3s ease-in-out infinite alternate both;
+}
+
+@keyframes imp-drift {
+  from {
+    transform: translateY(0);
+    filter: brightness(1);
+  }
+  to {
+    transform: translateY(-6px);
+    filter: brightness(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .imp-build,
+  .imp-drift {
+    animation: none;
+  }
 }
