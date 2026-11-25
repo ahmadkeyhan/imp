@@ -140,6 +140,20 @@ button.primary {
   background: #303030;
 }
 
+.card.match {
+  border-color: #c4a36a;
+  background: #3a342c;
+}
+
+.card.match:hover {
+  border-color: #e0c48a;
+}
+
+.caption em {
+  font-style: normal;
+  color: #e0c48a;
+}
+
 .caption {
   display: flex;
   flex-wrap: wrap;

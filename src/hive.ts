@@ -13,7 +13,7 @@ const HEX_CY = 80*Math.sin(Math.PI/3);
 
 // Chance the hive is an impossible object. 0 keeps every structure buildable
 // in 3D. 1 keeps only structures whose beams fail to close.
-export const IMPOSSIBLE = .99;
+export const IMPOSSIBLE = 1;
 
 // Sides 0 and 3 step x, sides 1 and 4 step y, sides 2 and 5 step z.
 // Opposite sides step opposite ways. A loop that does not return to the same
@@ -43,25 +43,22 @@ const TWIN_AXES: ReadonlyArray<readonly [number, number]> = [
 ];
 
 const FOOTPRINTS: Footprint[] = [
-  { name: 'Hive', weight: 30, pick: () => (q, r) => radius(q, r) <= 2 },
-  { name: 'Ring', weight: 20, pick: () => (q, r) => radius(q, r) >= 1 && radius(q, r) <= 2 },
-  {
-    name: 'Triangle',
-    weight: 20,
+  { name: 'Hive', weight: 35, pick: () => (q, r) => radius(q, r) <= 2 },
+  { name: 'Ring', weight: 30, pick: () => (q, r) => radius(q, r) >= 1 && radius(q, r) <= 2 },
+  { name: 'Triangle', weight: 15,
     pick: (rnd) => {
       const flip = rnd() < 0.5 ? 1 : -1;
       return (q, r) => Math.max(flip * q, flip * r, flip * -(q + r)) <= 1;
     },
   },
-  {
-    name: 'Twin',
-    weight: 15,
+  { name: 'Twin', weight: 20,
     pick: (rnd) => {
       const [dq, dr] = TWIN_AXES[Math.floor(rnd() * TWIN_AXES.length)];
       return (q, r) => radius(q - dq, r - dr) <= 1 || radius(q + dq, r + dr) <= 1;
     },
   },
-  { name: 'Core', weight: 15, pick: () => (q, r) => radius(q, r) <= 1 },
+  // The inner 7 cells. Left out: most seeds there were the same triangle.
+  // { name: 'Core', weight: 25, pick: () => (q, r) => radius(q, r) <= 1 },
 ];
 
 function pickFootprint(rnd: () => number): { name: string; inside: Inside } {
@@ -247,11 +244,39 @@ export type Hive = {
   tiles: Tile[];
 };
 
+// Occupied cells reach the footprint's min and max on q, r, and q + r, so the
+// structure cannot slide to another place inside the same footprint.
+function spans(cells: Cell[], assigned: number[], inside: Inside): boolean {
+  let footMin = [Infinity, Infinity, Infinity];
+  let footMax = [-Infinity, -Infinity, -Infinity];
+  let usedMin = [Infinity, Infinity, Infinity];
+  let usedMax = [-Infinity, -Infinity, -Infinity];
+  let used = 0;
+  for (let index = 0; index < cells.length; index++) {
+    const q = cells[index].q;
+    const r = cells[index].r;
+    if (!inside(q, r)) continue;
+    const proj = [q, r, q + r];
+    for (let axis = 0; axis < 3; axis++) {
+      footMin[axis] = Math.min(footMin[axis], proj[axis]);
+      footMax[axis] = Math.max(footMax[axis], proj[axis]);
+    }
+    if (assigned[index] <= 0) continue;
+    used++;
+    for (let axis = 0; axis < 3; axis++) {
+      usedMin[axis] = Math.min(usedMin[axis], proj[axis]);
+      usedMax[axis] = Math.max(usedMax[axis], proj[axis]);
+    }
+  }
+  return used > 0 && footMin.every((value, axis) => value === usedMin[axis] && footMax[axis] === usedMax[axis]);
+}
+
 // Randomized backtracking. Tighter outer constraints go first. A mask is
 // kept only when every already-assigned neighbor agrees on the shared edge.
 // Roads stay one piece. A single-crossing tile may appear at most twice.
-// The all-zero hive is rejected. IMPOSSIBLE picks a buildable frame or a
-// contradictory one before the search starts.
+// The all-zero hive is rejected. The beams must reach every side of the
+// footprint, so one loop cannot be slid to a second place. IMPOSSIBLE picks
+// a buildable frame or a contradictory one before the search starts.
 export function generateHive(rnd: () => number): Hive {
   const footprint = pickFootprint(rnd);
   const cells = buildCells(footprint.inside);
@@ -295,7 +320,9 @@ export function generateHive(rnd: () => number): Hive {
     if (!wantImpossible && !isPossible(cells, assigned)) return false;
     if (step === order.length) {
       const formed = assigned.some((mask) => mask !== 0) && !piecesSplit(cells, assigned);
-      return formed && isPossible(cells, assigned) !== wantImpossible;
+      // The same loop can sit anywhere the footprint allows. Only a structure
+      // that reaches every side of its footprint has one position.
+      return formed && spans(cells, assigned, footprint.inside) && isPossible(cells, assigned) !== wantImpossible;
     }
     const index = order[step];
     const options = legal(index);
