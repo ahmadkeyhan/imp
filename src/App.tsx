@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { initBoot } from './bootloader.ts';
 import type { BootContext } from './bootloader.ts';
 import { hiveFeatures } from './features.ts';
-import { HiveSvg } from './HiveSvg.tsx';
+import { HiveMark } from './HiveMark.tsx';
+import { HiveThree } from './HiveThree.tsx';
 import { ART_H, ART_W, generateHive } from './hive.ts';
 import type { Hive } from './hive.ts';
 import { pickStyle } from './style.ts';
@@ -31,8 +32,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.style.background = art.palette.background;
-    document.body.style.background = art.palette.background;
+    const background = art.palette.background;
+    document.documentElement.style.background = background;
+    document.body.style.background = background;
     bootRef.current?.setFeatures(hiveFeatures(hive, art));
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => bootRef.current?.capture());
@@ -48,18 +50,16 @@ export default function App() {
   const width = ART_W * scale;
   const height = ART_H * scale;
 
+  const frame = {
+    position: 'absolute' as const,
+    left: (box.width - width) / 2,
+    top: (box.height - height) / 2,
+  };
+
   return (
-    <HiveSvg
-      tiles={hive.tiles}
-      art={art}
-      width={width}
-      height={height}
-      animate={!capture}
-      style={{
-        position: 'absolute',
-        left: (box.width - width) / 2,
-        top: (box.height - height) / 2,
-      }}
-    />
+    <>
+      <HiveThree tiles={hive.tiles} palette={art.palette} width={width} height={height} animate={!capture} style={frame} />
+      <HiveMark tiles={hive.tiles} art={art} width={width} height={height} style={frame} />
+    </>
   );
 }

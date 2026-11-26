@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { hiveFeatures } from '../features.ts';
 import type { Features } from '../features.ts';
-import { HiveSvg } from '../HiveSvg.tsx';
 import { ART_H, ART_W, generateHive } from '../hive.ts';
 import type { Hive } from '../hive.ts';
 import { randomHash, seeded } from '../seed.ts';
+import { paintHiveStill } from '../solidScene.ts';
 import { pickStyle } from '../style.ts';
 import type { Style } from '../style.ts';
 
@@ -76,6 +76,32 @@ function tally(entries: Entry[], key: (entry: Entry) => string | number): Array<
     if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
     return b[1] - a[1];
   });
+}
+
+function Thumb({ entry }: { entry: Entry }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const width = THUMB;
+  const height = Math.round((THUMB * ART_H) / ART_W);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const token = { ok: true };
+    paintHiveStill(entry.hive.tiles, entry.art.palette, canvas, width, height, token);
+    return () => {
+      token.ok = false;
+    };
+  }, [entry, width, height]);
+  return (
+    <canvas
+      ref={ref}
+      style={{
+        width,
+        height,
+        background: entry.art.palette.background,
+        borderRadius: 4,
+      }}
+    />
+  );
 }
 
 function Histogram({ title, rows, total, active, onPick }: {
@@ -184,13 +210,7 @@ export default function Sheet() {
             target="_blank"
             rel="noreferrer"
           >
-            <HiveSvg
-              tiles={entry.hive.tiles}
-              art={entry.art}
-              width={THUMB}
-              height={(THUMB * ART_H) / ART_W}
-              style={{ background: entry.art.palette.background, borderRadius: 4 }}
-            />
+            <Thumb entry={entry} />
             <span className="caption">
               <strong>{entry.features.Topology}</strong>
               {entry.features.Symmetry !== 'None' && <strong>{entry.features.Symmetry}</strong>}

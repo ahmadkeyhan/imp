@@ -2,60 +2,87 @@ export type Palette = {
   name: string;
   weight: number;
   background: string;
+  /** Top of the pale wash. */
   top: string;
+  /** Warm side. */
   right: string;
+  /** Cool side, toward the top of the frame. */
   left: string;
+  /** Cool side, toward the bottom. */
+  low: string;
+  /** Lower accent. */
+  deep: string;
+  /** Tint where the face turns from the light. */
+  shade: string;
   /** Silhouette against the background. */
   outer: string;
   /** Ridge where two lit faces fold away from each other. */
   outward: string;
   grid: string;
+  /** Line drawing under the structure. */
+  mark: string;
 };
 
 export const PALETTES: Palette[] = [
   {
-    name: 'Graphite',
-    weight: 55,
-    background: '#2c2c2c',
-    top: '#9a9a9a',
-    right: '#686868',
-    left: '#484848',
-    outer: '#2c2c2c',
-    outward: '#d9d9d9',
-    grid: '#404040',
+    name: 'Peach',
+    weight: 40,
+    background: '#ffcda8',
+    top: '#f6dfb5',
+    right: '#f09a9c',
+    left: '#7ca3ce',
+    low: '#b6eeb8',
+    deep: '#74e3d5',
+    shade: '#a9a3c0',
+    outer: '#c48b84',
+    outward: '#fff6ee',
+    grid: '#e7b396',
+    mark: '#b98a86',
   },
   {
-    name: 'Bone',
-    weight: 18,
-    background: '#e8e2d6',
-    top: '#fbf8f1',
-    right: '#cfc6b5',
-    left: '#a99f8c',
-    outer: '#5a5245',
-    outward: '#ffffff',
-    grid: '#d6cebf',
+    name: 'Rose',
+    weight: 24,
+    background: '#f6d5d2',
+    top: '#f8e6df',
+    right: '#e9899a',
+    left: '#c7b0d4',
+    low: '#f0c3c8',
+    deep: '#e7b4c8',
+    shade: '#c4a4b4',
+    outer: '#c48a98',
+    outward: '#fff4f2',
+    grid: '#e4b8b4',
+    mark: '#b48490',
   },
   {
-    name: 'Blueprint',
-    weight: 17,
-    background: '#173a5e',
-    top: '#8fb4d9',
-    right: '#4f7fae',
-    left: '#2f5c8a',
-    outer: '#0e2741',
-    outward: '#d6e6f5',
-    grid: '#24496f',
+    name: 'Mist',
+    weight: 20,
+    background: '#d5e4ea',
+    top: '#f4f7f2',
+    right: '#f0c9c2',
+    left: '#8eb4d4',
+    low: '#b7e3d8',
+    deep: '#9fd4e4',
+    shade: '#b7c0d4',
+    outer: '#7f9eae',
+    outward: '#f7fbfb',
+    grid: '#b7cdd6',
+    mark: '#7f92a0',
   },
   {
-    name: 'Rust',
-    weight: 10,
-    background: '#2a211d',
-    top: '#d08a5a',
-    right: '#9c5a36',
-    left: '#6e3b22',
-    outer: '#1c1512',
-    outward: '#f0d2b8',
-    grid: '#3d302a',
+    name: 'Sand',
+    weight: 16,
+    background: '#f0e2cc',
+    top: '#f8efd8',
+    right: '#e7b89a',
+    left: '#c9c4b0',
+    low: '#d5e0c4',
+    deep: '#c9d6c0',
+    shade: '#cbb8a4',
+    outer: '#b89a78',
+    outward: '#fff8ee',
+    grid: '#e0cbb0',
+    mark: '#b09880',
   },
 ];
 
