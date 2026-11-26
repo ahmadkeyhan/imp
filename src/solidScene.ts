@@ -112,6 +112,7 @@ const SOLID_FRAG = `
   uniform vec3 uLow;
   uniform vec3 uDeep;
   uniform vec3 uShade;
+  uniform vec3 uBg;
   #include <clipping_planes_pars_fragment>
   void main() {
     #include <clipping_planes_fragment>
@@ -120,18 +121,27 @@ const SOLID_FRAG = `
     float height = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
     float across = clamp(dot(rel, uRight) / uSpan, -1.0, 1.0);
 
-    float rise = smoothstep(-0.75, 0.65, height);
-    vec3 wash = mix(uLow, mix(uWarm, uTop, smoothstep(-0.15, 0.55, height)), rise);
-    wash = mix(wash, uCool, smoothstep(0.15, -0.75, across) * mix(0.15, 0.55, smoothstep(0.3, -0.6, height)));
-    wash = mix(wash, uDeep, smoothstep(0.05, -0.85, height) * smoothstep(-0.15, 0.75, across) * 0.45);
-
+    float sideH = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
     float topF = smoothstep(0.25, 0.92, clamp(-n.y, 0.0, 1.0));
     float rightF = smoothstep(0.25, 0.92, clamp(n.x, 0.0, 1.0));
     float leftF = smoothstep(0.25, 0.92, clamp(n.z, 0.0, 1.0));
+    float h = mix(height, sideH, clamp(rightF + leftF, 0.0, 1.0));
+
+    float rise = smoothstep(-0.75, 0.65, h);
+    vec3 wash = mix(uLow, mix(uWarm, uTop, smoothstep(-0.15, 0.55, h)), rise);
+    wash = mix(wash, uCool, smoothstep(0.15, -0.75, across) * mix(0.15, 0.55, smoothstep(0.3, -0.6, h)));
+    wash = mix(wash, uDeep, smoothstep(0.05, -0.85, h) * smoothstep(-0.15, 0.75, across) * 0.45);
+
+    vec3 coolSide = mix(uCool, uLow, smoothstep(0.35, -0.45, sideH));
+    float lifted = 1.0 - smoothstep(-1.0, 0.0, uPointer.y);
+    float sunk = smoothstep(0.0, 1.0, uPointer.y);
+    vec3 topTone = mix(uTop, vec3(1.0), lifted * 0.62);
+    topTone = mix(topTone, uBg, sunk * 0.82);
+
     vec3 color = wash;
-    color = mix(color, uTop, topF * 0.78);
+    color = mix(color, topTone, topF * mix(0.78, 1.0, sunk));
     color = mix(color, uWarm, rightF * 0.62);
-    color = mix(color, mix(uCool, uLow, smoothstep(0.35, -0.45, height)), leftF * 0.62);
+    color = mix(color, coolSide, leftF * 0.62);
 
     vec2 screen = vec2(dot(vWorld, uRight), dot(vWorld, uDown));
     float grit = fract(sin(dot(screen * 12.0, vec2(127.1, 311.7))) * 43758.5453) - 0.5;
@@ -141,7 +151,7 @@ const SOLID_FRAG = `
     vec3 key = normalize(base + uRight * uPointer.x * 1.15 + uDown * uPointer.y * 1.15);
     float nd = dot(n, key);
     color = mix(color, mix(color, uShade, 0.55), smoothstep(0.35, -0.15, nd));
-    color = mix(color, vec3(1.0), 0.05);
+    color = mix(color, vec3(1.0), 0.05 * (1.0 - topF * sunk));
     gl_FragColor = vec4(color, 1.0);
   }
 `;
@@ -191,6 +201,7 @@ export function buildHive(tiles: Tile[], palette: Palette): SolidHive {
         uLow: { value: srgb(palette.low) },
         uDeep: { value: srgb(palette.deep) },
         uShade: { value: srgb(palette.shade) },
+        uBg: { value: srgb(palette.background) },
       },
       vertexShader: SOLID_VERT,
       fragmentShader: SOLID_FRAG,
@@ -228,8 +239,9 @@ export function buildHive(tiles: Tile[], palette: Palette): SolidHive {
       if (neighbor && (tile.q > neighbor.q || (tile.q === neighbor.q && tile.r > neighbor.r))) continue;
       const [x0, y0] = corners[edge];
       const [x1, y1] = corners[(edge + 1) % 6];
-      const p0 = screenToWorld(cx + x0, cy + y0).addScaledVector(VIEW, -0.5);
-      const p1 = screenToWorld(cx + x1, cy + y1).addScaledVector(VIEW, -0.5);
+      // Behind every beam. A shallow offset leaves the dashes on the receding faces.
+      const p0 = screenToWorld(cx + x0, cy + y0).addScaledVector(VIEW, -7);
+      const p1 = screenToWorld(cx + x1, cy + y1).addScaledVector(VIEW, -7);
       gridPts.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
     }
   }
