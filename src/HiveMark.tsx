@@ -17,18 +17,49 @@ const H = [
 const AXIS = [0, 1, 2, 0, 1, 2];
 const STEP = [-1, -1, -1, 1, 1, 1];
 
-const PREFERRED_R = 28;
-const EDGE = 12;
-const CLEARANCE = 10;
+// Flat-top, same orientation as the tiles. Larger than the old circle, and
+// set off the structure along the grid's northeast step.
+const MARK_R = 40;
+const EDGE = 56;
+const BODY = 78;
+const GAP = 14;
 
 type Seg = readonly [number, number, number, number];
 
-function place(maxY: number): { cy: number; r: number } {
-  const preferred = ART_H - EDGE - PREFERRED_R;
-  if (preferred - PREFERRED_R >= maxY + CLEARANCE) return { cy: preferred, r: PREFERRED_R };
-  const room = ART_H - EDGE - (maxY + CLEARANCE);
-  const r = Math.min(PREFERRED_R, Math.max(8, room / 2));
-  return { cy: maxY + CLEARANCE + r, r };
+function hexPoints(cx: number, cy: number, radius: number): string {
+  const apothem = radius * Math.sin(Math.PI / 3);
+  const corners: Array<[number, number]> = [
+    [-radius / 2, -apothem],
+    [-radius, 0],
+    [-radius / 2, apothem],
+    [radius / 2, apothem],
+    [radius, 0],
+    [radius / 2, -apothem],
+  ];
+  return corners.map(([x, y]) => `${cx + x},${cy + y}`).join(' ');
+}
+
+// Screen northeast matches axial (q + 1, r - 1): right and up.
+function placeNortheast(minX: number, minY: number, maxX: number, maxY: number): { cx: number; cy: number } {
+  const hx = (minX + maxX) / 2;
+  const hy = (minY + maxY) / 2;
+  const ux = TILE_W * 0.75;
+  const uy = -TILE_H / 2;
+  const len = Math.hypot(ux, uy);
+  const nx = ux / len;
+  const ny = uy / len;
+  let reach = 0;
+  for (const x of [minX - BODY, maxX + BODY]) {
+    for (const y of [minY - BODY, maxY + BODY]) {
+      reach = Math.max(reach, (x - hx) * nx + (y - hy) * ny);
+    }
+  }
+  const apothem = MARK_R * Math.sin(Math.PI / 3);
+  let cx = hx + nx * (reach + apothem + GAP);
+  let cy = hy + ny * (reach + apothem + GAP);
+  cx = Math.min(ART_W - EDGE - MARK_R, Math.max(EDGE + MARK_R, cx));
+  cy = Math.min(ART_H - EDGE - apothem, Math.max(EDGE + apothem, cy));
+  return { cx, cy };
 }
 
 function beams(tiles: Tile[]): Seg[] {
@@ -52,7 +83,7 @@ function beams(tiles: Tile[]): Seg[] {
   return segs;
 }
 
-function markOf(tiles: Tile[]): { lines: string[]; cy: number; r: number } {
+function markOf(tiles: Tile[]): { lines: string[]; hex: string; r: number } {
   const segs = beams(tiles);
   let minX = Infinity;
   let minY = Infinity;
@@ -64,19 +95,23 @@ function markOf(tiles: Tile[]): { lines: string[]; cy: number; r: number } {
     maxX = Math.max(maxX, x1, x2);
     maxY = Math.max(maxY, y1, y2);
   }
-  // The painted beam hangs below its centerline, so the circle clears that body.
-  const foot = (Number.isFinite(maxY) ? maxY : ART_H / 2) + 24;
-  const { cy: oy, r } = place(foot);
+  if (!Number.isFinite(minX)) {
+    minX = ART_W / 2;
+    maxX = ART_W / 2;
+    minY = ART_H / 2;
+    maxY = ART_H / 2;
+  }
+  const { cx: ox, cy: oy } = placeNortheast(minX, minY, maxX, maxY);
   const span = Math.max(1, maxX - minX, maxY - minY);
-  const scale = (r * 1.35) / span;
+  const apothem = MARK_R * Math.sin(Math.PI / 3);
+  const scale = (apothem * 1.45) / span;
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-  const ox = ART_W / 2;
   const fit = (x: number, y: number) => `${ox + (x - cx) * scale},${oy + (y - cy) * scale}`;
   return {
     lines: segs.map(([x1, y1, x2, y2]) => `${fit(x1, y1)} ${fit(x2, y2)}`),
-    cy: oy,
-    r,
+    hex: hexPoints(ox, oy, MARK_R),
+    r: MARK_R,
   };
 }
 
@@ -98,7 +133,7 @@ export function HiveMark({ tiles, art, width, height, style }: {
       height={height}
       style={{ ...style, pointerEvents: 'none' }}
     >
-      <circle cx={ART_W / 2} cy={mark.cy} r={mark.r} fill="none" stroke={stroke} strokeWidth={weight * 0.85} />
+      <polygon points={mark.hex} fill="none" stroke={stroke} strokeDasharray={4} strokeWidth={weight * 0.5} strokeLinejoin="round" opacity={0.2} />
       {mark.lines.map((points, index) => (
         <polyline key={index} points={points} fill="none" stroke={stroke} strokeWidth={weight} strokeLinejoin="round" strokeLinecap="round" />
       ))}

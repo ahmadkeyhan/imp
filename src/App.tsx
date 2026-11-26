@@ -59,7 +59,7 @@ export default function App() {
   return (
     <>
       <HiveThree tiles={hive.tiles} palette={art.palette} width={width} height={height} animate={!capture} style={frame} />
-      <HiveMark tiles={hive.tiles} art={art} width={width} height={height} style={frame} />
+      {/* <HiveMark tiles={hive.tiles} art={art} width={width} height={height} style={frame} /> */}
     </>
   );
 }
