@@ -146,7 +146,7 @@ const SOLID_FRAG = `
 
     vec2 screen = vec2(dot(vWorld, uRight), dot(vWorld, uDown));
     float grit = fract(sin(dot(screen * 12.0, vec2(127.1, 311.7))) * 43758.5453) - 0.5;
-    color += grit * 0.055 * clamp(rightF + leftF, 0.0, 1.0);
+    color += grit * 0.055 * clamp(rightF + leftF + topF, 0.0, 1.0);
 
     vec3 base = vec3(0.45, -1.35, 0.22);
     vec3 key = normalize(base + uRight * uPointer.x * 1.15 + uDown * uPointer.y * 1.15);
