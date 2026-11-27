@@ -60,8 +60,149 @@ function hexCorners(): Array<[number, number]> {
   ];
 }
 
+// Round corner: inner radius is the outer radius minus the beam width.
+const BEAM = 2;
+const OUTER = 2.22;
+const INNER = OUTER - BEAM;
+const BEND = (OUTER + INNER) / 2;
+const BEND_STEPS = 8;
+
+const DIR = RODS.map(({ axis, sign }) => {
+  const v = new Vector3();
+  v.setComponent(axis, sign);
+  return v;
+});
+
+type ProfilePoint = { a: number; b: number; na: number; nb: number };
+type SweepFrame = { p: Vector3; n: Vector3; b: Vector3 };
+type Bucket = { pos: number[]; nrm: number[]; idx: number[] };
+
+// Sharp square. Each corner is two vertices so the edge stays a hard crease.
+function beamProfile(): ProfilePoint[] {
+  const h = BEAM / 2;
+  const sides: Array<[number, number, number, number]> = [
+    [h, h, 1, 0],
+    [h, -h, 1, 0],
+    [h, -h, 0, -1],
+    [-h, -h, 0, -1],
+    [-h, -h, -1, 0],
+    [-h, h, -1, 0],
+    [-h, h, 0, 1],
+    [h, h, 0, 1],
+  ];
+  return sides.map(([a, b, na, nb]) => ({ a, b, na, nb }));
+}
+
+function axesFor(u: Vector3): { n: Vector3; b: Vector3 } {
+  const helper = Math.abs(u.y) > 0.5 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+  const b = new Vector3().crossVectors(u, helper).normalize();
+  const n = new Vector3().crossVectors(b, u).normalize();
+  return { n, b };
+}
+
+function addVert(bucket: Bucket, p: Vector3, normal: Vector3): number {
+  const index = bucket.pos.length / 3;
+  bucket.pos.push(p.x, p.y, p.z);
+  bucket.nrm.push(normal.x, normal.y, normal.z);
+  return index;
+}
+
+function triOut(bucket: Bucket, ia: number, ib: number, ic: number, out: Vector3) {
+  const ax = bucket.pos[ib * 3] - bucket.pos[ia * 3];
+  const ay = bucket.pos[ib * 3 + 1] - bucket.pos[ia * 3 + 1];
+  const az = bucket.pos[ib * 3 + 2] - bucket.pos[ia * 3 + 2];
+  const bx = bucket.pos[ic * 3] - bucket.pos[ia * 3];
+  const by = bucket.pos[ic * 3 + 1] - bucket.pos[ia * 3 + 1];
+  const bz = bucket.pos[ic * 3 + 2] - bucket.pos[ia * 3 + 2];
+  const nx = ay * bz - az * by;
+  const ny = az * bx - ax * bz;
+  const nz = ax * by - ay * bx;
+  if (nx * out.x + ny * out.y + nz * out.z < 0) bucket.idx.push(ia, ic, ib);
+  else bucket.idx.push(ia, ib, ic);
+}
+
+function appendSweep(bucket: Bucket, prof: ProfilePoint[], frames: SweepFrame[], cap0: boolean, cap1: boolean) {
+  const rings: number[][] = [];
+  for (const frame of frames) {
+    const ring: number[] = [];
+    for (const pt of prof) {
+      const p = frame.p.clone().addScaledVector(frame.n, pt.a).addScaledVector(frame.b, pt.b);
+      const normal = frame.n.clone().multiplyScalar(pt.na).addScaledVector(frame.b, pt.nb).normalize();
+      ring.push(addVert(bucket, p, normal));
+    }
+    rings.push(ring);
+  }
+  const count = prof.length;
+  for (let i = 0; i < frames.length - 1; i++) {
+    for (let j = 0; j < count; j++) {
+      const j1 = (j + 1) % count;
+      const out = new Vector3().fromArray(bucket.nrm, rings[i][j] * 3);
+      triOut(bucket, rings[i][j], rings[i][j1], rings[i + 1][j], out);
+      triOut(bucket, rings[i][j1], rings[i + 1][j1], rings[i + 1][j], out);
+    }
+  }
+  const cap = (frame: SweepFrame, ring: number[], sign: number) => {
+    const outward = new Vector3().crossVectors(frame.n, frame.b).multiplyScalar(sign).normalize();
+    const center = addVert(bucket, frame.p, outward);
+    const rim = ring.map((vi) => {
+      const p = new Vector3().fromArray(bucket.pos, vi * 3);
+      return addVert(bucket, p, outward);
+    });
+    for (let j = 0; j < count; j++) triOut(bucket, center, rim[j], rim[(j + 1) % count], outward);
+  };
+  if (cap0) cap(frames[0], rings[0], -1);
+  if (cap1) cap(frames[frames.length - 1], rings[rings.length - 1], 1);
+}
+
+function appendElbow(bucket: Bucket, prof: ProfilePoint[], u: Vector3, v: Vector3) {
+  const binormal = new Vector3().crossVectors(u, v).normalize();
+  const center = new Vector3().addScaledVector(u, BEND).addScaledVector(v, BEND);
+  const frames: SweepFrame[] = [];
+  for (let step = 0; step <= BEND_STEPS; step++) {
+    const t = (Math.PI / 2) * (step / BEND_STEPS);
+    const radial = u.clone().multiplyScalar(-Math.sin(t)).addScaledVector(v, -Math.cos(t));
+    const tangent = v.clone().multiplyScalar(Math.sin(t)).addScaledVector(u, -Math.cos(t));
+    frames.push({
+      p: center.clone().addScaledVector(radial, BEND),
+      n: new Vector3().crossVectors(binormal, tangent).normalize(),
+      b: binormal.clone(),
+    });
+  }
+  appendSweep(bucket, prof, frames, false, false);
+}
+
+// Two perpendicular arms. Straights and joints of three or more stay a sharp miter.
+function elbowArms(open: boolean[]): [number, number] | null {
+  const arms: number[] = [];
+  for (let i = 0; i < 6; i++) if (open[i]) arms.push(i);
+  if (arms.length !== 2 || RODS[arms[0]].axis === RODS[arms[1]].axis) return null;
+  return [arms[0], arms[1]];
+}
+
+function buildElbow(open: boolean[]): BufferGeometry {
+  const arms = elbowArms(open);
+  if (!arms) throw new Error('elbow');
+  const prof = beamProfile();
+  const bucket: Bucket = { pos: [], nrm: [], idx: [] };
+  for (const i of arms) {
+    const u = DIR[i];
+    const { n, b } = axesFor(u);
+    appendSweep(bucket, prof, [
+      { p: u.clone().multiplyScalar(BEND), n, b },
+      { p: u.clone().multiplyScalar(EXT), n, b },
+    ], false, true);
+  }
+  appendElbow(bucket, prof, DIR[arms[0]], DIR[arms[1]]);
+  const geo = new BufferGeometry();
+  geo.setAttribute('position', new Float32BufferAttribute(bucket.pos, 3));
+  geo.setAttribute('normal', new Float32BufferAttribute(bucket.nrm, 3));
+  geo.setIndex(bucket.idx);
+  geo.computeBoundingSphere();
+  return geo;
+}
+
 function placeRod(mesh: Mesh, axis: 0 | 1 | 2, sign: number) {
-  const center = (sign * (1 + EXT)) / 2;
+  const center = (sign * (BEAM / 2 + EXT)) / 2;
   mesh.rotation.set(0, 0, 0);
   mesh.position.set(0, 0, 0);
   if (axis === 0) mesh.position.x = center;
@@ -115,6 +256,11 @@ const SOLID_FRAG = `
   uniform vec3 uShade;
   uniform vec3 uBg;
   #include <clipping_planes_pars_fragment>
+
+  float grit(vec2 p) {
+    return fract(sin(dot(p * 12.0, vec2(127.1, 311.7))) * 43758.5453);
+  }
+
   void main() {
     #include <clipping_planes_fragment>
     vec3 n = normalize(vNormal);
@@ -122,16 +268,30 @@ const SOLID_FRAG = `
     float height = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
     float across = clamp(dot(rel, uRight) / uSpan, -1.0, 1.0);
 
-    float sideH = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
     float topF = smoothstep(0.25, 0.92, clamp(-n.y, 0.0, 1.0));
     float rightF = smoothstep(0.25, 0.92, clamp(n.x, 0.0, 1.0));
     float leftF = smoothstep(0.25, 0.92, clamp(n.z, 0.0, 1.0));
-    float h = mix(height, sideH, clamp(rightF + leftF, 0.0, 1.0));
+
+    vec2 screen = vec2(dot(vWorld, uRight), dot(vWorld, uDown));
+    vec2 leftUV = vec2(-0.5 * screen.x - 0.8660254 * screen.y, 0.8660254 * screen.x - 0.5 * screen.y);
+    vec2 topUV = vec2(-0.5 * screen.x + 0.8660254 * screen.y, -0.8660254 * screen.x - 0.5 * screen.y);
+    float gR = grit(screen);
+    float gL = grit(leftUV);
+    float gT = grit(topUV);
+    float face = rightF + leftF + topF;
+    float dither = (gR * rightF + gL * leftF + gT * topF) / max(face, 0.001);
+    float kick = (dither - 0.5) * 0.05;
+
+    float sideH0 = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
+    float h0 = mix(height, sideH0, clamp(rightF + leftF, 0.0, 1.0));
+    float h = clamp(h0 + kick, -1.0, 1.0);
+    float sideH = clamp(sideH0 + kick, -1.0, 1.0);
+    float acrossD = clamp(across + kick, -1.0, 1.0);
 
     float rise = smoothstep(-0.75, 0.65, h);
     vec3 wash = mix(uLow, mix(uWarm, uTop, smoothstep(-0.15, 0.55, h)), rise);
-    wash = mix(wash, uCool, smoothstep(0.15, -0.75, across) * mix(0.15, 0.55, smoothstep(0.3, -0.6, h)));
-    wash = mix(wash, uDeep, smoothstep(0.05, -0.85, h) * smoothstep(-0.15, 0.75, across) * 0.45);
+    wash = mix(wash, uCool, smoothstep(0.15, -0.75, acrossD) * mix(0.15, 0.55, smoothstep(0.3, -0.6, h)));
+    wash = mix(wash, uDeep, smoothstep(0.05, -0.85, h) * smoothstep(-0.15, 0.75, acrossD) * 0.45);
 
     vec3 coolSide = mix(uCool, uLow, smoothstep(0.35, -0.45, sideH));
     float lifted = 1.0 - smoothstep(-1.0, 0.0, uPointer.y);
@@ -144,15 +304,12 @@ const SOLID_FRAG = `
     color = mix(color, uWarm, rightF * 0.62);
     color = mix(color, coolSide, leftF * 0.62);
 
-    vec2 screen = vec2(dot(vWorld, uRight), dot(vWorld, uDown));
-    float grit = fract(sin(dot(screen * 12.0, vec2(127.1, 311.7))) * 43758.5453) - 0.5;
-    color += grit * 0.055 * clamp(rightF + leftF + topF, 0.0, 1.0);
-
     vec3 base = vec3(0.45, -1.35, 0.22);
     vec3 key = normalize(base + uRight * uPointer.x * 1.15 + uDown * uPointer.y * 1.15);
     float nd = dot(n, key);
     color = mix(color, mix(color, uShade, 0.55), smoothstep(0.35, -0.15, nd));
     color = mix(color, vec3(1.0), 0.05 * (1.0 - topF * sunk));
+    color += (dither - 0.5) * 0.055 * clamp(face, 0.0, 1.0);
     gl_FragColor = vec4(color, 1.0);
   }
 `;
@@ -209,14 +366,15 @@ export type SolidHive = {
   dispose: () => void;
 };
 
-export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH = ART_H): SolidHive {
+export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH = ART_H, round = false): SolidHive {
   const scene = new Scene();
   const camera = makeSolidCamera(viewW, viewH);
   const pointer = new Vector2();
   const origin = screenToWorld(ART_W / 2, ART_H / 2);
   const corners = hexCorners();
-  const jointGeo = new BoxGeometry(2, 2, 2);
-  const rodGeo = new BoxGeometry(EXT - 1, 2, 2);
+  const jointGeo = new BoxGeometry(BEAM, BEAM, BEAM);
+  const rodGeo = new BoxGeometry(EXT - BEAM / 2, BEAM, BEAM);
+  const elbows = new Map<string, BufferGeometry>();
   const materials: ShaderMaterial[] = [];
   const groups: Array<{ group: Group; delay: number }> = [];
   const measure = measureHive(tiles);
@@ -252,14 +410,23 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
     materials.push(material);
     const group = new Group();
     group.position.copy(screenToWorld(cx, cy));
-    const joint = new Mesh(jointGeo, material);
-    group.add(joint);
     const open = [...tile.name].map((digit) => digit === '1');
-    for (let side = 0; side < 6; side++) {
-      if (!open[side]) continue;
-      const rod = new Mesh(rodGeo, material);
-      placeRod(rod, RODS[side].axis, RODS[side].sign);
-      group.add(rod);
+    if (round && elbowArms(open)) {
+      const mask = open.map((bit) => (bit ? '1' : '0')).join('');
+      let elbow = elbows.get(mask);
+      if (!elbow) {
+        elbow = buildElbow(open);
+        elbows.set(mask, elbow);
+      }
+      group.add(new Mesh(elbow, material));
+    } else {
+      group.add(new Mesh(jointGeo, material));
+      for (let side = 0; side < 6; side++) {
+        if (!open[side]) continue;
+        const rod = new Mesh(rodGeo, material);
+        placeRod(rod, RODS[side].axis, RODS[side].sign);
+        group.add(rod);
+      }
     }
     scene.add(group);
     groups.push({ group, delay: Math.max(0, measure.order[index]) * STEP_MS });
@@ -343,6 +510,7 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
     dispose: () => {
       jointGeo.dispose();
       rodGeo.dispose();
+      for (const elbow of elbows.values()) elbow.dispose();
       gridGeo.dispose();
       gridMat.dispose();
       groundGeo.dispose();
@@ -376,6 +544,7 @@ export function paintHiveStill(
   width: number,
   height: number,
   token: { ok: boolean },
+  round = false,
 ) {
   queue.push(() => {
     if (!token.ok) return;
@@ -386,7 +555,7 @@ export function paintHiveStill(
     shared.setClearColor(0x000000, 0);
     shared.outputColorSpace = SRGBColorSpace;
     shared.localClippingEnabled = true;
-    const hive = buildHive(tiles, palette);
+    const hive = buildHive(tiles, palette, ART_W, ART_H, round);
     shared.render(hive.scene, hive.camera);
     if (token.ok) {
       target.width = Math.round(width * dpr);

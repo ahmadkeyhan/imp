@@ -26,6 +26,7 @@ const TRAITS: Array<keyof Features> = [
   'Symmetry',
   'Density',
   'Palette',
+  'Corners',
   'Paradoxes',
   'Loops',
   'Cells',
@@ -86,7 +87,7 @@ function Thumb({ entry }: { entry: Entry }) {
     const canvas = ref.current;
     if (!canvas) return;
     const token = { ok: true };
-    paintHiveStill(entry.hive.tiles, entry.art.palette, canvas, width, height, token);
+    paintHiveStill(entry.hive.tiles, entry.art.palette, canvas, width, height, token, entry.art.corners === 'Round');
     return () => {
       token.ok = false;
     };

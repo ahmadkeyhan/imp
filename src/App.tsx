@@ -43,7 +43,7 @@ export default function App() {
 
   return (
     <>
-      <HiveThree tiles={hive.tiles} palette={art.palette} width={box.width} height={box.height} animate={!capture} style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }} />
+      <HiveThree tiles={hive.tiles} palette={art.palette} round={art.corners === 'Round'} width={box.width} height={box.height} animate={!capture} style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }} />
       {/* <HiveMark tiles={hive.tiles} art={art} width={width} height={height} style={frame} /> */}
     </>
   );

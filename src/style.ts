@@ -86,8 +86,17 @@ export const PALETTES: Palette[] = [
   },
 ];
 
+export const CORNERS = [
+  { name: 'Sharp' as const, weight: 75 },
+  { name: 'Round' as const, weight: 25 },
+];
+
+export type Corners = (typeof CORNERS)[number]['name'];
+
 export type Style = {
   palette: Palette;
+  /** Elbows only. Joints of three or more stay sharp boxes. */
+  corners: Corners;
 };
 
 function pick<T extends { weight: number }>(items: T[], rnd: () => number): T {
@@ -102,5 +111,5 @@ function pick<T extends { weight: number }>(items: T[], rnd: () => number): T {
 
 // Rolled after the structure, from the same generator.
 export function pickStyle(rnd: () => number): Style {
-  return { palette: pick(PALETTES, rnd) };
+  return { palette: pick(PALETTES, rnd), corners: pick(CORNERS, rnd).name };
 }

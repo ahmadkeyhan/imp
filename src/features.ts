@@ -8,6 +8,7 @@ export type Features = {
   Symmetry: string;
   Density: string;
   Palette: string;
+  Corners: string;
   Cells: number;
   Loops: number;
   Paradoxes: number;
@@ -21,6 +22,7 @@ export function hiveFeatures(hive: Hive, style: Style): Features {
     Symmetry: measure.symmetry,
     Density: hive.density,
     Palette: style.palette.name,
+    Corners: style.corners,
     Cells: measure.cells,
     Loops: measure.loops,
     Paradoxes: measure.paradoxes,

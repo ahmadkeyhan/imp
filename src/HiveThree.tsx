@@ -8,9 +8,11 @@ import { frameScale } from './solidView.ts';
 
 const RISE_MS = 700;
 
-export function HiveThree({ tiles, palette, width, height, animate = false, style }: {
+export function HiveThree({ tiles, palette, round = false, width, height, animate = false, style }: {
   tiles: Tile[];
   palette: Palette;
+  /** Round the two-arm corners. Joints of three or more stay sharp boxes. */
+  round?: boolean;
   width: number;
   height: number;
   /** Grow each joint. The pointer steers the light. Off for capture. */
@@ -32,7 +34,7 @@ export function HiveThree({ tiles, palette, width, height, animate = false, styl
     host.appendChild(renderer.domElement);
 
     const scale = frameScale(width, height);
-    const hive = buildHive(tiles, palette, width / scale, height / scale);
+    const hive = buildHive(tiles, palette, width / scale, height / scale, round);
     const started = performance.now();
     const settled = hive.settled + RISE_MS;
     let frame = 0;
@@ -75,7 +77,7 @@ export function HiveThree({ tiles, palette, width, height, animate = false, styl
       hive.dispose();
       renderer.dispose();
     };
-  }, [tiles, palette, width, height, animate]);
+  }, [tiles, palette, round, width, height, animate]);
 
   return <div ref={hostRef} style={{ width, height, ...style }} />;
 }
