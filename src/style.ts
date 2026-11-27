@@ -2,8 +2,13 @@ export type Palette = {
   name: string;
   weight: number;
   background: string;
-  /** Top of the pale wash. */
+  /** Top faces, high in the frame. */
   top: string;
+  /** Top faces through the middle, and low in the frame. */
+  topMid: string;
+  topLow: string;
+  /** The soft warm tone beside `right`. */
+  blush: string;
   /** Warm side. */
   right: string;
   /** Cool side, toward the top of the frame. */
@@ -27,13 +32,16 @@ export const PALETTES: Palette[] = [
   {
     name: 'Peach',
     weight: 40,
-    background: '#ffcda8',
-    top: '#f6dfb5',
-    right: '#f09a9c',
-    left: '#7ca3ce',
-    low: '#b6eeb8',
-    deep: '#74e3d5',
-    shade: '#a9a3c0',
+    background: '#fbbb8b',
+    top: '#fff0b3',
+    topMid: '#febe97',
+    topLow: '#dde597',
+    right: '#ec757d',
+    blush: '#fc9c8c',
+    left: '#4786d9',
+    low: '#9bf49e',
+    deep: '#24feee',
+    shade: '#a184b7',
     outer: '#c48b84',
     outward: '#fff6ee',
     grid: '#e7b396',
@@ -42,13 +50,16 @@ export const PALETTES: Palette[] = [
   {
     name: 'Rose',
     weight: 24,
-    background: '#f6d5d2',
-    top: '#f8e6df',
-    right: '#e9899a',
-    left: '#c7b0d4',
-    low: '#99c3ee',
-    deep: '#e7b4c8',
-    shade: '#c4a4b4',
+    background: '#f3b2b6',
+    top: '#fff1db',
+    topMid: '#fabfc4',
+    topLow: '#d9bfe8',
+    right: '#e15a87',
+    blush: '#f389a1',
+    left: '#4f6bdd',
+    low: '#97c2fb',
+    deep: '#46d6ff',
+    shade: '#a476c6',
     outer: '#c48a98',
     outward: '#fff4f2',
     grid: '#e4b8b4',
@@ -57,13 +68,16 @@ export const PALETTES: Palette[] = [
   {
     name: 'Mist',
     weight: 20,
-    background: '#d5e4ea',
-    top: '#f4f7f2',
-    right: '#f0c9c2',
-    left: '#8eb4d4',
-    low: '#b7e3d8',
-    deep: '#9fd4e4',
-    shade: '#b7c0d4',
+    background: '#b8d4dc',
+    top: '#fcfade',
+    topMid: '#d0e6d4',
+    topLow: '#acebd4',
+    right: '#e37d9d',
+    blush: '#eea8ab',
+    left: '#3671c5',
+    low: '#91f2c1',
+    deep: '#18f9eb',
+    shade: '#7a8ccd',
     outer: '#7f9eae',
     outward: '#f7fbfb',
     grid: '#b7cdd6',
@@ -72,17 +86,39 @@ export const PALETTES: Palette[] = [
   {
     name: 'Sand',
     weight: 16,
-    background: '#f0e2cc',
-    top: '#f8efd8',
-    right: '#e7b89a',
-    left: '#c9c4b0',
-    low: '#d5e0c4',
-    deep: '#c9d6c0',
-    shade: '#cbb8a4',
-    outer: '#b89a78',
-    outward: '#fff8ee',
-    grid: '#e0cbb0',
+    background: '#afafaf',
+    top: '#e5e4df',
+    topMid: '#cfcac5',
+    topLow: '#a0a0a0',
+    right: '#dadada',
+    blush: '#cecece',
+    left: '#b3b3b3',
+    low: '#e7e7e7',
+    deep: '#e4e4e4',
+    shade: '#b3b3b3',
+    outer: '#b8b8b8',
+    outward: '#ffffff',
+    grid: '#a7a7a7',
     mark: '#b09880',
+  },
+  {
+    name: 'Midnight',
+    // Not rolled by weight: see MIDNIGHT_SHARE.
+    weight: 0,
+    background: '#26234a',
+    top: '#d3caff',
+    topMid: '#ac9bd5',
+    topLow: '#87c4d5',
+    right: '#9a5cbc',
+    blush: '#7a4c9c',
+    left: '#3552a0',
+    low: '#48bfb2',
+    deep: '#48bfb2',
+    shade: '#756bb7',
+    outer: '#2e3b75',
+    outward: '#e9e5ff',
+    grid: '#474178',
+    mark: '#756bb7',
   },
 ];
 
@@ -109,7 +145,22 @@ function pick<T extends { weight: number }>(items: T[], rnd: () => number): T {
   return items[items.length - 1];
 }
 
+// Midnight takes this part from the end of each other palette's range, so a seed
+// that does not turn Midnight keeps the palette it had before.
+const MIDNIGHT_SHARE = 0.12;
+
+function pickPalette(rnd: () => number): Palette {
+  const midnight = PALETTES.find((p) => p.name === 'Midnight')!;
+  const total = PALETTES.reduce((sum, item) => sum + item.weight, 0);
+  let roll = rnd() * total;
+  for (const item of PALETTES) {
+    if (roll < item.weight) return roll < item.weight * (1 - MIDNIGHT_SHARE) ? item : midnight;
+    roll -= item.weight;
+  }
+  return midnight;
+}
+
 // Rolled after the structure, from the same generator.
 export function pickStyle(rnd: () => number): Style {
-  return { palette: pick(PALETTES, rnd), corners: pick(CORNERS, rnd).name };
+  return { palette: pickPalette(rnd), corners: pick(CORNERS, rnd).name };
 }

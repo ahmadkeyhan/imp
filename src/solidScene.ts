@@ -10,6 +10,7 @@ import {
   LineSegments,
   Mesh,
   Plane,
+  Quaternion,
   Scene,
   ShaderMaterial,
   Vector2,
@@ -22,9 +23,10 @@ import type { Tile } from './hive.ts';
 import type { Palette } from './style.ts';
 import { DOWN, PX, RIGHT, VIEW, makeSolidCamera, screenToWorld } from './solidView.ts';
 
-const STEP_MS = 110;
+// The first joint pops this long after the page is ready.
+const START_S = 0.3;
 const REACH = 6;
-const EXT = REACH + 1.5;
+const EXT = REACH + 3;
 const BLEED = 0.45;
 
 const NEIGHBORS = [
@@ -61,8 +63,10 @@ function hexCorners(): Array<[number, number]> {
 }
 
 // Round corner: inner radius is the outer radius minus the beam width.
-const BEAM = 2;
-const OUTER = 2.22;
+const BEAM = 3.4;
+const OUTER = BEAM + 0.22;
+// The dashed hex board under the beams. 0 hides it.
+const GRID = 0;
 const INNER = OUTER - BEAM;
 const BEND = (OUTER + INNER) / 2;
 const BEND_STEPS = 8;
@@ -179,7 +183,7 @@ function elbowArms(open: boolean[]): [number, number] | null {
   return [arms[0], arms[1]];
 }
 
-function buildElbow(open: boolean[]): BufferGeometry {
+function buildElbow(open: boolean[], end = EXT): BufferGeometry {
   const arms = elbowArms(open);
   if (!arms) throw new Error('elbow');
   const prof = beamProfile();
@@ -189,7 +193,7 @@ function buildElbow(open: boolean[]): BufferGeometry {
     const { n, b } = axesFor(u);
     appendSweep(bucket, prof, [
       { p: u.clone().multiplyScalar(BEND), n, b },
-      { p: u.clone().multiplyScalar(EXT), n, b },
+      { p: u.clone().multiplyScalar(end), n, b },
     ], false, true);
   }
   appendElbow(bucket, prof, DIR[arms[0]], DIR[arms[1]]);
@@ -249,77 +253,115 @@ const SOLID_FRAG = `
   uniform float uSpan;
   uniform vec2 uPointer;
   uniform vec3 uTop;
+  uniform vec3 uTopMid;
+  uniform vec3 uTopLow;
   uniform vec3 uWarm;
+  uniform vec3 uBlush;
   uniform vec3 uCool;
   uniform vec3 uLow;
-  uniform vec3 uDeep;
   uniform vec3 uShade;
   uniform vec3 uBg;
+  // Which arms this joint has. Where a face looks along another arm, the two
+  // make an inner corner: the tops take a soft shadow.
+  uniform float uHasNeg[3];
+  uniform float uHasPos[3];
+  uniform vec3 uCenter;
+  uniform float uSnap;
+  uniform float uHalf;
   #include <clipping_planes_pars_fragment>
 
+  const float SEAM = 4.2;
+
+  // Only enough grain to keep the long gradients from banding. No sine in the
+  // hash: on some graphics chips that draws faint slanted stripes.
   float grit(vec2 p) {
-    return fract(sin(dot(p * 12.0, vec2(127.1, 311.7))) * 43758.5453);
+    vec3 q = fract(vec3(p.xyx) * 12.0 * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
   }
 
   void main() {
     #include <clipping_planes_fragment>
     vec3 n = normalize(vNormal);
     vec3 rel = vWorld - uOrigin;
-    float height = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
+    float h = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
     float across = clamp(dot(rel, uRight) / uSpan, -1.0, 1.0);
 
-    float topF = smoothstep(0.25, 0.92, clamp(-n.y, 0.0, 1.0));
-    float rightF = smoothstep(0.25, 0.92, clamp(n.x, 0.0, 1.0));
-    float leftF = smoothstep(0.25, 0.92, clamp(n.z, 0.0, 1.0));
+    float topF = smoothstep(0.25, 0.92, abs(n.y));
+    float rightF = smoothstep(0.25, 0.92, abs(n.x));
+    float leftF = smoothstep(0.25, 0.92, abs(n.z));
+    float face = max(topF + rightF + leftF, 0.001);
+
+    // How far from the joint along this arm: 0 at the joint, 1 half way to the next.
+    vec3 offset = vWorld - uCenter;
+    vec3 a = abs(offset);
+    vec3 an = abs(n);
+    int facing = (an.x >= an.y && an.x >= an.z) ? 0 : (an.y >= an.z ? 1 : 2);
+    if (facing == 0) a.x = -1.0;
+    else if (facing == 1) a.y = -1.0;
+    else a.z = -1.0;
+    float reach = max(a.x, max(a.y, a.z));
+    // Neighboring joints meet on a hexagon edge, which crosses a face at a
+    // slant, as near as 4.3 along the arm. Everything that depends on dist must
+    // have settled by then, or it stops short on that slanted line.
+    float dist = clamp((reach - uHalf) / (SEAM - uHalf), 0.0, 1.0);
+
+    float corner;
+    if (facing == 0) corner = n.x < 0.0 ? uHasNeg[0] : uHasPos[0];
+    else if (facing == 1) corner = n.y < 0.0 ? uHasNeg[1] : uHasPos[1];
+    else corner = n.z < 0.0 ? uHasNeg[2] : uHasPos[2];
+    corner *= 1.0 - smoothstep(0.0, 1.0, dist);
+    // A cut end faces along an arm too, but sits far out along it: no glow there.
+    float out_ = facing == 0 ? abs(offset.x) : (facing == 1 ? abs(offset.y) : abs(offset.z));
+    corner *= 1.0 - smoothstep(uHalf + 0.4, uHalf + 1.0, out_);
+
+    float lift = -uPointer.y * 0.35;
+    float side = clamp(h + lift, -1.0, 1.0);
+    vec3 pale = mix(uBg, uTopMid, 0.35);
+
+    // Tops: one long fall of light, cream above, then peach, then a green cast.
+    vec3 top = mix(uTopLow, uTopMid, smoothstep(-0.85, -0.2, h));
+    top = mix(top, mix(uTopMid, uTop, 0.6), smoothstep(-0.15, 0.3, h));
+    top = mix(top, uTop, smoothstep(0.25, 0.85, h));
+    top = mix(top, vec3(1.0), max(lift, 0.0) * 0.5);
+    top = mix(top, uShade, corner * 0.45);
+
+    // Faces toward the right: rose at the joint, dissolving toward the ground.
+    vec3 warm = mix(uBlush, uWarm, smoothstep(-0.35, 0.7, side));
+    warm = mix(warm, pale, smoothstep(-0.1, 1.0, dist) * 0.12);
+    warm = mix(warm, pale, smoothstep(0.15, -0.75, side) * smoothstep(0.0, 0.9, across) * 0.42);
+    warm = mix(warm, uShade, smoothstep(-0.15, -0.85, across) * 0.75);
+    warm = mix(warm, mix(uLow, pale, 0.3), smoothstep(-0.3, -0.85, side) * 0.7);
+
+    // Faces toward the left: the gradient runs the other way, rose into lilac and blue.
+    vec3 cool = mix(uWarm, uShade, smoothstep(0.45, -0.45, across));
+    cool = mix(mix(pale, uBlush, 0.35), cool, 0.8 + 0.2 * smoothstep(-0.1, 1.0, dist));
+    cool = mix(cool, mix(pale, uBlush, 0.35), smoothstep(-0.1, 0.8, across) * 0.36);
+    cool = mix(cool, uCool, smoothstep(0.05, -0.75, across) * smoothstep(0.75, -0.15, side));
+    cool = mix(cool, mix(uLow, pale, (1.0 - dist) * 0.12), smoothstep(-0.15, -0.7, side));
+    cool = mix(cool, uTop, smoothstep(0.5, 1.0, side) * 0.45);
+
+    vec3 color = (top * topF + warm * rightF + cool * leftF) / face;
+
+    vec3 key = normalize(vec3(0.45, -1.35, 0.22) + uRight * uPointer.x * 1.15 + uDown * uPointer.y * 1.15);
+    float nd = dot(n, key);
+    color = mix(color, mix(color, uShade, 0.5), smoothstep(0.25, -0.25, nd) * min(1.0, length(uPointer)));
 
     vec2 screen = vec2(dot(vWorld, uRight), dot(vWorld, uDown));
-    vec2 leftUV = vec2(-0.5 * screen.x - 0.8660254 * screen.y, 0.8660254 * screen.x - 0.5 * screen.y);
-    vec2 topUV = vec2(-0.5 * screen.x + 0.8660254 * screen.y, -0.8660254 * screen.x - 0.5 * screen.y);
-    float gR = grit(screen);
-    float gL = grit(leftUV);
-    float gT = grit(topUV);
-    float face = rightF + leftF + topF;
-    float dither = (gR * rightF + gL * leftF + gT * topF) / max(face, 0.001);
-    float kick = (dither - 0.5) * 0.05;
+    color += (grit(screen) - 0.5) * 0.012;
 
-    float sideH0 = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
-    float h0 = mix(height, sideH0, clamp(rightF + leftF, 0.0, 1.0));
-    float h = clamp(h0 + kick, -1.0, 1.0);
-    float sideH = clamp(sideH0 + kick, -1.0, 1.0);
-    float acrossD = clamp(across + kick, -1.0, 1.0);
-
-    float rise = smoothstep(-0.75, 0.65, h);
-    vec3 wash = mix(uLow, mix(uWarm, uTop, smoothstep(-0.15, 0.55, h)), rise);
-    wash = mix(wash, uCool, smoothstep(0.15, -0.75, acrossD) * mix(0.15, 0.55, smoothstep(0.3, -0.6, h)));
-    wash = mix(wash, uDeep, smoothstep(0.05, -0.85, h) * smoothstep(-0.15, 0.75, acrossD) * 0.45);
-
-    vec3 coolSide = mix(uCool, uLow, smoothstep(0.35, -0.45, sideH));
-    float lifted = 1.0 - smoothstep(-1.0, 0.0, uPointer.y);
-    float sunk = smoothstep(0.0, 1.0, uPointer.y);
-    vec3 topTone = mix(uTop, vec3(1.0), lifted * 0.62);
-    topTone = mix(topTone, uBg, sunk * 0.82);
-
-    vec3 color = wash;
-    color = mix(color, topTone, topF * mix(0.78, 1.0, sunk));
-    color = mix(color, uWarm, rightF * 0.62);
-    color = mix(color, coolSide, leftF * 0.62);
-
-    vec3 base = vec3(0.45, -1.35, 0.22);
-    vec3 key = normalize(base + uRight * uPointer.x * 1.15 + uDown * uPointer.y * 1.15);
-    float nd = dot(n, key);
-    color = mix(color, mix(color, uShade, 0.55), smoothstep(0.35, -0.15, nd));
-    color = mix(color, vec3(1.0), 0.05 * (1.0 - topF * sunk));
-    color += (dither - 0.5) * 0.055 * clamp(face, 0.0, 1.0);
+    color = mix(color, vec3(1.0), uSnap * 0.45);
     gl_FragColor = vec4(color, 1.0);
   }
 `;
 
 const GROUND_VERT = `
   varying vec3 vWorld;
+  // The resting camera. The ground ignores the orbit, so it never shows an edge.
+  uniform mat4 uRest;
   void main() {
-    vec4 world = modelMatrix * vec4(position, 1.0);
-    vWorld = world.xyz;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vWorld = position;
+    gl_Position = uRest * vec4(position, 1.0);
   }
 `;
 
@@ -335,18 +377,71 @@ const GROUND_FRAG = `
   uniform vec3 uWarm;
   uniform vec3 uCool;
   uniform vec3 uLow;
+  uniform vec3 uGrid;
+  uniform vec3 uShade;
+  uniform float uField;
+  uniform float uTime;
+  uniform float uPx;
+  uniform vec2 uArtCenter;
+  uniform vec2 uCursor;
+  uniform float uSnap;
+  uniform float uNight;
+
+  // The board does not stop at the hive: the same flat-top hexes, to every edge.
+  vec3 comb(vec3 color) {
+    vec2 art = vec2(dot(vWorld, uRight), dot(vWorld, uDown)) * uPx - uArtCenter;
+    float tileH = 160.0 * 0.8660254;
+    float fq = art.x / 120.0;
+    float fr = art.y / tileH - fq * 0.5;
+    vec3 cube = vec3(fq, fr, -fq - fr);
+    vec3 round3 = floor(cube + 0.5);
+    vec3 diff = abs(round3 - cube);
+    if (diff.x > diff.y && diff.x > diff.z) round3.x = -round3.y - round3.z;
+    else if (diff.y > diff.z) round3.y = -round3.x - round3.z;
+    else round3.z = -round3.x - round3.y;
+    vec2 d = art - vec2(round3.x * 120.0, (round3.y + round3.x * 0.5) * tileH);
+    float reach = max(abs(d.y), max(abs(d.y * 0.5 + d.x * 0.8660254), abs(d.y * 0.5 - d.x * 0.8660254)));
+    float edge = tileH * 0.5 - reach;
+    float aa = max(fwidth(art.x), 0.001);
+    float line = 1.0 - smoothstep(aa * 0.4, aa * 1.6, edge);
+
+    float ring = max(abs(round3.x), max(abs(round3.y), abs(round3.z)));
+    float outside = smoothstep(2.0, 3.0, ring);
+    float far = length(art) / 1000.0;
+    float fade = 1.0 - smoothstep(0.25, 1.05, far);
+    float front = mod(uTime * 0.6, 22.0);
+    float swell = exp(-pow(ring - front, 2.0) * 1.6) * outside;
+    float near = exp(-dot(art - uCursor, art - uCursor) / (150.0 * 150.0));
+
+    color = mix(color, color * mix(vec3(1.0), uShade, 0.55), smoothstep(0.3, 1.35, far) * mix(0.1, 0.55, uNight));
+    color = mix(color, uTop, exp(-dot(art, art) / (330.0 * 330.0)) * mix(0.0, 0.34, uNight));
+    color = mix(color, vec3(1.0), swell * fade * (0.13 + uSnap * 0.2));
+    vec3 ink = mix(uGrid * 0.86, uTop, uNight);
+    color = mix(color, ink, line * outside * (fade * mix(0.1, 0.14, uNight) + swell * 0.45));
+    color = mix(color, vec3(1.0), line * near * 0.75);
+    return color;
+  }
+
   void main() {
     vec3 rel = vWorld - uOrigin;
     float height = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
     float across = clamp(dot(rel, uRight) / uSpan, -1.0, 1.0);
     float h = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
+    // A flat field, as in the reference. Only the pointer adds a little air.
     vec3 color = uBg;
-    color = mix(color, uTop, smoothstep(0.0, 1.0, h) * 0.42);
-    color = mix(color, uLow, (1.0 - smoothstep(-1.0, 0.0, h)) * 0.28);
-    color = mix(color, uCool, (1.0 - smoothstep(-1.0, 0.2, across)) * 0.16);
-    color = mix(color, uWarm, smoothstep(-0.1, 1.0, across) * 0.1);
     float glow = uPointer.x * across;
-    color = mix(color, vec3(1.0), clamp(glow, 0.0, 1.0) * 0.06);
+    color = mix(color, vec3(1.0), clamp(glow, 0.0, 1.0) * 0.05);
+    if (uNight > 0.0) {
+      // Dusk: only the ground goes dark. The beams keep their colors and glow against it.
+      float halo = exp(-dot(rel, rel) / (uSpan * uSpan * 0.45));
+      vec3 dusk = mix(vec3(0.075, 0.066, 0.13), vec3(0.19, 0.15, 0.25), halo);
+      color = mix(color, dusk + (color - uBg) * 0.12, uNight);
+    }
+    if (uField > 0.0) {
+      vec3 lit = comb(color);
+      // The same comb, with its light and shade turned down after dusk.
+      color = mix(color, lit, uField * mix(1.0, 0.3, uNight));
+    }
     gl_FragColor = vec4(color, 1.0);
   }
 `;
@@ -356,14 +451,54 @@ function srgb(hex: string): Vector3 {
   return new Vector3(((tone >> 16) & 255) / 255, ((tone >> 8) & 255) / 255, (tone & 255) / 255);
 }
 
+function walkJoints(tiles: Tile[], order: number[]) {
+  const index = new Map(tiles.map((tile, i) => [`${tile.q},${tile.r}`, i]));
+  const neighbor = (i: number, side: number): number => {
+    if (tiles[i].name[side] !== '1') return -1;
+    const [dq, dr] = NEIGHBORS[side];
+    return index.get(`${tiles[i].q + dq},${tiles[i].r + dr}`) ?? -1;
+  };
+  const flat = tiles.map((tile) => screenToWorld(tile.x + TILE_W / 2, tile.y + TILE_H / 2));
+  const real: Array<Vector3 | null> = tiles.map(() => null);
+  const depth = tiles.map(() => 0);
+  const start = order.indexOf(0);
+  const queue = start < 0 ? [] : [start];
+  if (start >= 0) real[start] = flat[start].clone();
+  while (queue.length) {
+    const i = queue.shift() as number;
+    for (let side = 0; side < 6; side++) {
+      const j = neighbor(i, side);
+      if (j < 0 || real[j]) continue;
+      real[j] = (real[i] as Vector3).clone().addScaledVector(DIR[side], REACH * 2);
+      depth[j] = depth[i] + 1;
+      queue.push(j);
+    }
+  }
+  const along = tiles.map((_, i) => (real[i] ? (real[i] as Vector3).clone().sub(flat[i]).dot(VIEW) : 0));
+  const used = along.filter((_, i) => real[i]);
+  const mean = used.reduce((sum, v) => sum + v, 0) / Math.max(1, used.length);
+  return {
+    depth,
+    neighbor,
+    lift: tiles.map((_, i) => VIEW.clone().multiplyScalar(real[i] ? along[i] - mean : 0)),
+  };
+}
+
 export type SolidHive = {
   scene: Scene;
   camera: ReturnType<typeof makeSolidCamera>;
   pointer: Vector2;
-  groups: Array<{ group: Group; delay: number }>;
+  groups: Array<{ group: Group }>;
   bases: Vector3[];
-  settled: number;
   dispose: () => void;
+  /** Draw the build as it stands this many seconds in. At buildTime or later
+   *  the piece is whole. Never called for stills. */
+  assemble: (seconds: number) => void;
+  buildTime: number;
+  /** Turn the camera off the one view where the frame closes. 0, 0 is that view. */
+  orbit: (yaw: number, pitch: number) => number;
+  /** Move the comb and the snap flash. Never called for stills. */
+  tick: (live: { time: number; field: number; snap: number; night: number; cursor: Vector2 }) => void;
 };
 
 export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH = ART_H, round = false): SolidHive {
@@ -376,8 +511,19 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
   const rodGeo = new BoxGeometry(EXT - BEAM / 2, BEAM, BEAM);
   const elbows = new Map<string, BufferGeometry>();
   const materials: ShaderMaterial[] = [];
-  const groups: Array<{ group: Group; delay: number }> = [];
+  const groups: Array<{ group: Group }> = [];
+  const cuts: ShaderMaterial[] = [];
   const measure = measureHive(tiles);
+
+  // Where each joint really is. Walking the beams from the first joint, every
+  // step is 12 units along one world axis. The flat position differs from this
+  // only along VIEW, until a loop closes: that last beam cannot meet.
+  const walk = walkJoints(tiles, measure.order);
+  const parts: Array<{ group: Group; lift: Vector3; rods: Array<{ mesh: Mesh; axis: 0 | 1 | 2; sign: number; side: number }>; elbow: Mesh | null; hub: Mesh | null; index: number; mask: string }> = [];
+  const shortElbows = new Map<string, BufferGeometry>();
+  const shared = {
+    uSnap: { value: 0 },
+  };
 
   for (let index = 0; index < tiles.length; index++) {
     const tile = tiles[index];
@@ -389,15 +535,22 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
         uOrigin: { value: origin },
         uRight: { value: RIGHT },
         uDown: { value: DOWN },
-        uSpan: { value: 14 },
+        uSpan: { value: 20 },
+        uHalf: { value: BEAM / 2 },
+        uTopMid: { value: srgb(palette.topMid) },
+        uTopLow: { value: srgb(palette.topLow) },
+        uBlush: { value: srgb(palette.blush) },
+        uHasNeg: { value: [0, 1, 2].map((side) => (tile.name[side] === '1' ? 1 : 0)) },
+        uHasPos: { value: [3, 4, 5].map((side) => (tile.name[side] === '1' ? 1 : 0)) },
         uPointer: { value: pointer },
         uTop: { value: srgb(palette.top) },
         uWarm: { value: srgb(palette.right) },
         uCool: { value: srgb(palette.left) },
         uLow: { value: srgb(palette.low) },
-        uDeep: { value: srgb(palette.deep) },
         uShade: { value: srgb(palette.shade) },
         uBg: { value: srgb(palette.background) },
+        uCenter: { value: new Vector3() },
+        ...shared,
       },
       vertexShader: SOLID_VERT,
       fragmentShader: SOLID_FRAG,
@@ -408,9 +561,25 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
       side: BackSide,
     });
     materials.push(material);
+    const planes = material.clippingPlanes as Plane[];
+    // Same uniforms, its own clipping.
+    const cutAt = (sides: number[]): ShaderMaterial => {
+      const cut = new ShaderMaterial({
+        uniforms: material.uniforms,
+        vertexShader: SOLID_VERT,
+        fragmentShader: SOLID_FRAG,
+        clipping: true,
+        clippingPlanes: sides.map((side) => planes[EDGE_DIGIT.indexOf(side)]),
+        side: BackSide,
+      });
+      cuts.push(cut);
+      return cut;
+    };
     const group = new Group();
     group.position.copy(screenToWorld(cx, cy));
+    material.uniforms.uCenter.value = group.position;
     const open = [...tile.name].map((digit) => digit === '1');
+    const part: (typeof parts)[number] = { group, lift: new Vector3(), rods: [], elbow: null, hub: null, index, mask: '' };
     if (round && elbowArms(open)) {
       const mask = open.map((bit) => (bit ? '1' : '0')).join('');
       let elbow = elbows.get(mask);
@@ -418,18 +587,24 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
         elbow = buildElbow(open);
         elbows.set(mask, elbow);
       }
-      group.add(new Mesh(elbow, material));
+      part.elbow = new Mesh(elbow, cutAt(elbowArms(open) as [number, number]));
+      part.mask = mask;
+      group.add(part.elbow);
     } else {
-      group.add(new Mesh(jointGeo, material));
+      part.hub = new Mesh(jointGeo, cutAt([]));
+      group.add(part.hub);
       for (let side = 0; side < 6; side++) {
         if (!open[side]) continue;
-        const rod = new Mesh(rodGeo, material);
+        const rod = new Mesh(rodGeo, cutAt([side]));
         placeRod(rod, RODS[side].axis, RODS[side].sign);
         group.add(rod);
+        part.rods.push({ mesh: rod, axis: RODS[side].axis, sign: RODS[side].sign, side });
       }
     }
+    part.lift.copy(walk.lift[index]);
+    parts.push(part);
     scene.add(group);
-    groups.push({ group, delay: Math.max(0, measure.order[index]) * STEP_MS });
+    groups.push({ group });
   }
 
   const byCell = new Map(tiles.map((tile) => [`${tile.q},${tile.r}`, tile]));
@@ -455,12 +630,14 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
   const gridMat = new LineDashedMaterial({
     color: new Color(palette.grid),
     transparent: true,
-    opacity: 0.45,
+    opacity: GRID,
     dashSize: 7 / PX,
     gapSize: 6 / PX,
   });
   const grid = new LineSegments(gridGeo, gridMat);
   grid.computeLineDistances();
+  // Hidden outright: even transparent dashes would still write depth.
+  grid.visible = GRID > 0;
   scene.add(grid);
 
   const camRight = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
@@ -489,6 +666,16 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
       uWarm: { value: srgb(palette.right) },
       uCool: { value: srgb(palette.left) },
       uLow: { value: srgb(palette.low) },
+      uRest: { value: camera.projectionMatrix.clone().multiply(camera.matrixWorldInverse) },
+      uGrid: { value: srgb(palette.grid) },
+      uShade: { value: srgb(palette.shade) },
+      uField: { value: 0 },
+      uTime: { value: 0 },
+      uPx: { value: PX },
+      uArtCenter: { value: new Vector2(ART_W / 2, ART_H / 2) },
+      uCursor: { value: new Vector2(1e5, 1e5) },
+      uSnap: shared.uSnap,
+      uNight: { value: 0 },
     },
     vertexShader: GROUND_VERT,
     fragmentShader: GROUND_FRAG,
@@ -500,22 +687,175 @@ export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH 
   ground.renderOrder = -1;
   scene.add(ground);
 
+  // The orbit turns about the middle of the real object and backs off to fit it.
+  const rest = { position: camera.position.clone(), up: camera.up.clone() };
+  const flat = groups.map((entry) => entry.group.position.clone());
+  const bases = flat.map((p) => p.clone());
+  const min = new Vector3(Infinity, Infinity, Infinity);
+  const max = min.clone().negate();
+  parts.forEach((part, i) => {
+    const p = flat[i].clone().add(part.lift);
+    min.min(p);
+    max.max(p);
+  });
+  const middle = parts.length ? min.clone().add(max).multiplyScalar(0.5) : origin.clone();
+  const span = Math.max(8, ...parts.map((part, i) => flat[i].clone().add(part.lift).distanceTo(middle) + EXT));
+  const fit = Math.min(1, (Math.min(viewW, viewH) / PX / 2 / span) * 0.96);
+  let wasOpen = false;
+  camera.far = 400;
+
+  // The reveal: the piece is sketched one beam at a time, as if by one hand. The
+  // walk goes depth first, so the line runs on as far as it can before it goes
+  // back to start the next branch. Every beam is drawn once.
+  const partAt = new Map(parts.map((part) => [part.index, part]));
+  const joined = (a: number, b: number) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+  const links = new Map<number, number[]>(parts.map((part) => [part.index, []]));
+  for (const part of parts) {
+    for (let side = 0; side < 6; side++) {
+      const other = walk.neighbor(part.index, side);
+      if (!partAt.has(other)) continue;
+      for (const [from, to] of [[part.index, other], [other, part.index]]) {
+        if (!links.get(from)!.includes(to)) links.get(from)!.push(to);
+      }
+    }
+  }
+  /** Each beam, by its two joints: its turn, and the joint the line leaves from. */
+  const strokes = new Map<string, { turn: number; from: number }>();
+  const reached = new Set<number>();
+  /** The stroke that first brings the line to each joint, 0 for where it starts. */
+  const landing = new Map<number, number>();
+  const sketch = (from: number) => {
+    reached.add(from);
+    for (const to of links.get(from)!) {
+      if (strokes.has(joined(from, to))) continue;
+      const turn = strokes.size;
+      strokes.set(joined(from, to), { turn, from });
+      if (!landing.has(to)) landing.set(to, turn + 1);
+      if (!reached.has(to)) sketch(to);
+    }
+  };
+  for (const part of [...parts].sort((a, b) => measure.order[a.index] - measure.order[b.index])) {
+    if (reached.has(part.index)) continue;
+    if (!landing.has(part.index)) landing.set(part.index, 0);
+    sketch(part.index);
+  }
+
+  const STROKE_S = Math.min(0.26, 3.2 / Math.max(1, strokes.size));
+  // The last term lets the last joint finish its bounce, or it stays swollen.
+  const buildTime = START_S + strokes.size * STROKE_S + 0.45;
+  const HUB = BEAM / 2;
+  // Past this, the whole arm is outside its cell and already clipped away.
+  const GROWN = 7.9;
+  const span01 = (t: number, from: number, length: number) => Math.min(1, Math.max(0, (t - from) / length));
+  // From small, past full size, and back.
+  const pop = (u: number) => 1 + 3.2 * (u - 1) ** 3 + 2.2 * (u - 1) ** 2;
+  const setRod = (rod: { mesh: Mesh; axis: 0 | 1 | 2; sign: number }, from: number, to: number) => {
+    rod.mesh.visible = to - from > 0.02;
+    rod.mesh.scale.x = Math.max(0.001, (to - from) / (EXT - HUB));
+    rod.mesh.position.setComponent(rod.axis, (rod.sign * (from + to)) / 2);
+  };
+
+  const assemble = (seconds: number) => {
+    const done = seconds >= buildTime;
+    for (const part of parts) {
+      const here = START_S + (landing.get(part.index) ?? 0) * STROKE_S;
+      // A rounded corner is one piece, so it starts earlier and pops whole.
+      const block = part.elbow ?? part.hub;
+      if (block) {
+        const u = done ? 1 : span01(seconds, part.elbow ? here - STROKE_S * 0.5 : here - 0.02, 0.4);
+        block.visible = u > 0;
+        block.scale.setScalar(u >= 1 ? 1 : Math.max(0.001, 0.35 + 0.65 * pop(u)));
+      }
+      for (const rod of part.rods) {
+        const stroke = strokes.get(joined(part.index, walk.neighbor(part.index, rod.side)));
+        // An arm either leads the line out from its joint, or carries it in from
+        // the edge of the cell. An arm that leads nowhere just grows.
+        const leaving = !stroke || stroke.from === part.index;
+        const start = stroke ? START_S + (stroke.turn + (leaving ? 0 : 0.5)) * STROKE_S : here;
+        const p = done ? 1 : span01(seconds, start, STROKE_S / 2);
+        if (p >= 1) setRod(rod, HUB, EXT);
+        else if (leaving) setRod(rod, HUB, HUB + (GROWN - HUB) * p);
+        else if (p > 0) setRod(rod, GROWN + (HUB - GROWN) * p, GROWN + 1.1);
+        else setRod(rod, GROWN, GROWN);
+      }
+    }
+  };
+
+  const orbit = (yaw: number, pitch: number): number => {
+    const angle = Math.hypot(yaw, pitch);
+    const t = Math.min(1, angle / 0.22);
+    const amount = t * t * (3 - 2 * t);
+    const open = angle > 1e-4;
+    // On the resting view the beams are clipped to their cells, as before. Off
+    // it, each arm is cut to half a step so the true gaps can be seen.
+    if (open !== wasOpen) {
+      wasOpen = open;
+      const end = open ? REACH + 0.02 : EXT;
+      for (const part of parts) {
+        for (const rod of part.rods) {
+          rod.mesh.scale.x = (end - BEAM / 2) / (EXT - BEAM / 2);
+          const center = (rod.sign * (BEAM / 2 + end)) / 2;
+          rod.mesh.position.setComponent(rod.axis, center);
+        }
+        if (part.elbow) {
+          const cache = open ? shortElbows : elbows;
+          let geo = cache.get(part.mask);
+          if (!geo) {
+            geo = buildElbow([...part.mask].map((d) => d === '1'), end);
+            cache.set(part.mask, geo);
+          }
+          part.elbow.geometry = geo;
+        }
+      }
+    }
+    parts.forEach((part, i) => {
+      // Sliding along VIEW is invisible from the resting camera, so the whole
+      // real depth goes in at once. A partial depth would split every joint;
+      // the full one splits only the joints that truly cannot meet.
+      bases[i].copy(flat[i]).addScaledVector(part.lift, open ? 1 : 0);
+    });
+    const turnBy = new Quaternion()
+      .setFromAxisAngle(DOWN, yaw)
+      .multiply(new Quaternion().setFromAxisAngle(RIGHT, pitch));
+    const pivot = origin.clone().lerp(middle, amount);
+    const offset = rest.position.clone().sub(origin).setLength(80 + 100 * amount).applyQuaternion(turnBy);
+    camera.position.copy(pivot).add(offset);
+    camera.up.copy(rest.up).applyQuaternion(turnBy);
+    camera.lookAt(pivot);
+    camera.zoom = 1 + (fit - 1) * amount;
+    camera.updateProjectionMatrix();
+    gridMat.opacity = GRID * (1 - amount);
+    return amount;
+  };
+
+  const tick: SolidHive['tick'] = (live) => {
+    shared.uSnap.value = live.snap;
+    groundMat.uniforms.uNight.value = live.night;
+    groundMat.uniforms.uField.value = live.field;
+    groundMat.uniforms.uTime.value = live.time;
+    groundMat.uniforms.uCursor.value.copy(live.cursor);
+  };
+
   return {
+    orbit,
+    tick,
+    assemble,
+    buildTime,
     scene,
     camera,
     pointer,
     groups,
-    bases: groups.map((entry) => entry.group.position.clone()),
-    settled: Math.max(0, ...groups.map((entry) => entry.delay)),
+    bases,
     dispose: () => {
       jointGeo.dispose();
       rodGeo.dispose();
       for (const elbow of elbows.values()) elbow.dispose();
+      for (const elbow of shortElbows.values()) elbow.dispose();
       gridGeo.dispose();
       gridMat.dispose();
       groundGeo.dispose();
       groundMat.dispose();
-      for (const material of materials) material.dispose();
+      for (const material of [...materials, ...cuts]) material.dispose();
     },
   };
 }
