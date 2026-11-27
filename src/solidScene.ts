@@ -3,6 +3,7 @@ import {
   BackSide,
   BufferGeometry,
   Color,
+  DoubleSide,
   Float32BufferAttribute,
   Group,
   LineDashedMaterial,
@@ -156,6 +157,43 @@ const SOLID_FRAG = `
   }
 `;
 
+const GROUND_VERT = `
+  varying vec3 vWorld;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const GROUND_FRAG = `
+  varying vec3 vWorld;
+  uniform vec3 uOrigin;
+  uniform vec3 uRight;
+  uniform vec3 uDown;
+  uniform float uSpan;
+  uniform vec2 uPointer;
+  uniform vec3 uBg;
+  uniform vec3 uTop;
+  uniform vec3 uWarm;
+  uniform vec3 uCool;
+  uniform vec3 uLow;
+  void main() {
+    vec3 rel = vWorld - uOrigin;
+    float height = clamp(-dot(rel, uDown) / uSpan, -1.0, 1.0);
+    float across = clamp(dot(rel, uRight) / uSpan, -1.0, 1.0);
+    float h = clamp(height + uPointer.y * 0.7, -1.0, 1.0);
+    vec3 color = uBg;
+    color = mix(color, uTop, smoothstep(0.0, 1.0, h) * 0.42);
+    color = mix(color, uLow, (1.0 - smoothstep(-1.0, 0.0, h)) * 0.28);
+    color = mix(color, uCool, (1.0 - smoothstep(-1.0, 0.2, across)) * 0.16);
+    color = mix(color, uWarm, smoothstep(-0.1, 1.0, across) * 0.1);
+    float glow = uPointer.x * across;
+    color = mix(color, vec3(1.0), clamp(glow, 0.0, 1.0) * 0.06);
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
 function srgb(hex: string): Vector3 {
   const tone = Number.parseInt(hex.slice(1), 16);
   return new Vector3(((tone >> 16) & 255) / 255, ((tone >> 8) & 255) / 255, (tone & 255) / 255);
@@ -171,9 +209,9 @@ export type SolidHive = {
   dispose: () => void;
 };
 
-export function buildHive(tiles: Tile[], palette: Palette): SolidHive {
+export function buildHive(tiles: Tile[], palette: Palette, viewW = ART_W, viewH = ART_H): SolidHive {
   const scene = new Scene();
-  const camera = makeSolidCamera();
+  const camera = makeSolidCamera(viewW, viewH);
   const pointer = new Vector2();
   const origin = screenToWorld(ART_W / 2, ART_H / 2);
   const corners = hexCorners();
@@ -258,6 +296,43 @@ export function buildHive(tiles: Tile[], palette: Palette): SolidHive {
   grid.computeLineDistances();
   scene.add(grid);
 
+  const camRight = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const camDown = new Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const camBack = new Vector3().setFromMatrixColumn(camera.matrixWorld, 2);
+  const groundCenter = camera.position.clone().addScaledVector(camBack, -40);
+  const halfW = (viewW / PX) * 0.51;
+  const halfH = (viewH / PX) * 0.51;
+  const groundPts: number[] = [];
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+    const point = groundCenter.clone().addScaledVector(camRight, sx * halfW).addScaledVector(camDown, sy * halfH);
+    groundPts.push(point.x, point.y, point.z);
+  }
+  const groundGeo = new BufferGeometry();
+  groundGeo.setAttribute('position', new Float32BufferAttribute(groundPts, 3));
+  groundGeo.setIndex([0, 1, 2, 0, 2, 3]);
+  const groundMat = new ShaderMaterial({
+    uniforms: {
+      uOrigin: { value: origin },
+      uRight: { value: RIGHT },
+      uDown: { value: DOWN },
+      uSpan: { value: viewH / PX / 2 },
+      uPointer: { value: pointer },
+      uBg: { value: srgb(palette.background) },
+      uTop: { value: srgb(palette.top) },
+      uWarm: { value: srgb(palette.right) },
+      uCool: { value: srgb(palette.left) },
+      uLow: { value: srgb(palette.low) },
+    },
+    vertexShader: GROUND_VERT,
+    fragmentShader: GROUND_FRAG,
+    side: DoubleSide,
+    depthWrite: false,
+  });
+  const ground = new Mesh(groundGeo, groundMat);
+  ground.frustumCulled = false;
+  ground.renderOrder = -1;
+  scene.add(ground);
+
   return {
     scene,
     camera,
@@ -270,6 +345,8 @@ export function buildHive(tiles: Tile[], palette: Palette): SolidHive {
       rodGeo.dispose();
       gridGeo.dispose();
       gridMat.dispose();
+      groundGeo.dispose();
+      groundMat.dispose();
       for (const material of materials) material.dispose();
     },
   };

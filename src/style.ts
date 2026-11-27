@@ -46,7 +46,7 @@ export const PALETTES: Palette[] = [
     top: '#f8e6df',
     right: '#e9899a',
     left: '#c7b0d4',
-    low: '#f0c3c8',
+    low: '#99c3ee',
     deep: '#e7b4c8',
     shade: '#c4a4b4',
     outer: '#c48a98',

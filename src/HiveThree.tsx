@@ -4,6 +4,7 @@ import { WebGLRenderer, SRGBColorSpace } from 'three';
 import type { Tile } from './hive.ts';
 import type { Palette } from './style.ts';
 import { buildHive } from './solidScene.ts';
+import { frameScale } from './solidView.ts';
 
 const RISE_MS = 700;
 
@@ -30,7 +31,8 @@ export function HiveThree({ tiles, palette, width, height, animate = false, styl
     renderer.localClippingEnabled = true;
     host.appendChild(renderer.domElement);
 
-    const hive = buildHive(tiles, palette);
+    const scale = frameScale(width, height);
+    const hive = buildHive(tiles, palette, width / scale, height / scale);
     const started = performance.now();
     const settled = hive.settled + RISE_MS;
     let frame = 0;
